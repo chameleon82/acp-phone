@@ -481,12 +481,35 @@ test('waiting cue starts only after a delay and stops immediately for the actual
     page.context.cue = cue;
     page.run("state = 'thinking'; audioContext = {currentTime: 0, async resume() {}}; createVoicePlayback = async () => cue; startThinkingNotice();");
     assert.equal(cue.plays, 0);
-    assert.equal([...page.timeouts.values()][0].delay, 2000);
+    assert.equal([...page.timeouts.values()][0].delay, 1000);
     await page.retry();
     assert.equal(cue.plays, 1);
     page.run("enqueueAudio = () => {}; handleStreamEvent({type: 'tts.audio'});");
     assert.equal(cue.stops, 1);
     assert.equal(page.run('thinkingAudio'), undefined);
+});
+
+test('first agent words stop the waiting cue before reply audio arrives', () => {
+    const cue = {pauses: 0, pause() {this.pauses++;}};
+    const request = new AbortController();
+    const page = browser();
+    page.context.cue = cue;
+    page.context.cueRequest = request;
+    page.run("state = 'thinking'; startThinkingNotice(); thinkingAudio = cue; thinkingRequest = cueRequest;");
+    page.run("handleStreamEvent({type: 'agent.text.delta', delta: 'Поняла, '})");
+    assert.equal(cue.pauses, 1);
+    assert.equal(request.signal.aborted, true);
+    assert.equal(page.timeouts.size, 0);
+    assert.equal(page.run('thinkingAudio'), undefined);
+    assert.equal(page.elements.get('#agent-text').textContent, 'Поняла, ');
+});
+
+test('whitespace agent chunks keep the waiting timer until meaningful text arrives', () => {
+    const page = browser();
+    page.run("state = 'thinking'; startThinkingNotice(); handleStreamEvent({type: 'agent.text.delta', delta: ' '});");
+    assert.equal(page.timeouts.size, 1);
+    page.run("handleStreamEvent({type: 'agent.text.delta', delta: 'Ответ'})");
+    assert.equal(page.timeouts.size, 0);
 });
 
 test('a noise-only recording ends normally and returns to listening without a waiting cue', async () => {
@@ -575,6 +598,34 @@ test('short noise previews keep agent audio running', async () => {
         assert.equal(previous.signal.aborted, false);
         assert.equal(page.run('playingQueue'), true);
     }
+});
+
+test('recognized words in later previews still stop the reply after early checks found no speech', async () => {
+    const previous = new AbortController();
+    const page = browser({fetch: async () => ({ok: true, async json() {return {transcript: 'Теперь стоп'};}})});
+    page.context.previous = previous;
+    page.run(`
+        state = 'recording'; transcriptGeneration = 1; activeRequest = previous; playingQueue = true;
+        const preview = {samples: new Float32Array(64000), sampleRate: 16000, token: 1, text: '', interruptAttempts: 2};
+        liveTranscription = preview;
+    `);
+    await page.run('updateLivePreview(preview)');
+    assert.equal(previous.signal.aborted, true);
+    assert.equal(page.run('playingQueue'), false);
+});
+
+test('recognized preview words stop a waiting cue even without reply audio playing', async () => {
+    const cue = {pauses: 0, pause() {this.pauses++;}};
+    const page = browser({fetch: async () => ({ok: true, async json() {return {transcript: 'Подожди'};}})});
+    page.context.cue = cue;
+    page.run(`
+        state = 'recording'; transcriptGeneration = 1; thinkingAudio = cue;
+        const preview = {samples: new Float32Array(12800), sampleRate: 16000, token: 1, text: ''};
+        liveTranscription = preview;
+    `);
+    await page.run('updateLivePreview(preview)');
+    assert.equal(cue.pauses, 1);
+    assert.equal(page.run('thinkingAudio'), undefined);
 });
 
 test('recognized speech interrupts the previous response only when transcription arrives', async () => {

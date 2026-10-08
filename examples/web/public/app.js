@@ -496,10 +496,14 @@ function handleStreamEvent(event) {
         transcript.textContent = event.transcript;
     }
     if (event.type === 'turn.completed') {
+        stopThinkingNotice();
         agentText.textContent = event.agentText;
         void pcmPlayback?.flush().catch(() => cancelAgentReply());
     }
-    if (event.type === 'agent.text.delta') agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
+    if (event.type === 'agent.text.delta') {
+        if (event.delta?.trim()) stopThinkingNotice();
+        agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
+    }
     if (event.type === 'tts.audio') {
         stopThinkingNotice();
         enqueueAudio(event);
@@ -556,7 +560,7 @@ function startThinkingNotice() {
         } finally {
             if (thinkingRequest === request) thinkingRequest = undefined;
         }
-    }, 2000);
+    }, 1000);
 }
 
 function stopThinkingNotice() {
@@ -603,7 +607,8 @@ async function startLiveTranscription() {
 }
 
 async function updateLivePreview(preview) {
-    const detectingInterruption = (playingQueue || activeRequest) && (preview.interruptAttempts || 0) < 2;
+    const detectingInterruption = (playingQueue || activeRequest || thinkingAudio || thinkingRequest)
+        && (preview.interruptAttempts || 0) < 2;
     const seconds = detectingInterruption ? (preview.interruptAttempts ? 1.2 : 0.8) : 4;
     const count = Math.round(preview.sampleRate * seconds);
     if (preview.request || preview.token === undefined || preview.samples.length < count ||
@@ -627,7 +632,8 @@ async function updateLivePreview(preview) {
         const {transcript: text} = await response.json();
         if (request.signal.aborted || liveTranscription !== preview || preview.token !== token ||
             transcriptGeneration !== token || transcriptFinalized) return;
-        if (detectingInterruption && replyGeneration === playbackGeneration && hasRecognizedSpeech(text)) {
+        if ((playingQueue || activeRequest || thinkingAudio || thinkingRequest)
+            && replyGeneration === playbackGeneration && hasRecognizedSpeech(text)) {
             cancelAgentReply({preserveCandidate: true});
             if (recorder) setState('recording', 'Listening', 'I heard you. Continue speaking; your turn sends after a pause.');
         }
