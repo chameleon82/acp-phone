@@ -162,6 +162,7 @@ button:disabled { cursor: default; opacity: .36; }
 .conversation-heading { display: flex; justify-content: space-between; align-items: baseline; }
 h2 { margin: 0 0 .75rem; font-size: .88rem; }
 .conversation-heading span { color: #719399; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; }
+#transcript-status { color: #719399; font-size: .75rem; margin-bottom: .35rem; }
 dl { display: grid; gap: .28rem; margin: 0; }
 dt { color: #83abb0; font-size: .7rem; font-weight: 700; }
 dd { margin: 0 0 .72rem; color: #e4eeee; font-size: .86rem; line-height: 1.4; white-space: pre-wrap; }

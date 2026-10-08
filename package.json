@@ -21,7 +21,7 @@
     "start": "node examples/web/server.js",
     "dev": "node --watch examples/web/server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check examples/web/server.js && node --check examples/web/public/app.js"
+    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check examples/web/server.js && node --check examples/web/public/app.js && node --check examples/web/public/pcm-capture.js"
   },
   "keywords": [
     "acp",

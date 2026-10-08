@@ -15,12 +15,12 @@ The browser receives only target `id` and `label`; the executable command, argum
 1. Tap **Call** once and grant microphone permission. The browser keeps the microphone open for the duration of the call.
 2. Browser voice-activity detection starts a recording after speech is detected, including a 350 ms audio buffer before detection so the first syllable is retained, and submits it after approximately 850 ms of silence. There is no Pause-to-send control; **Mic on/off** is only an optional privacy mute.
 3. The current OpenAI transcription endpoint is a completed-audio-file API, so transcription begins immediately at the automatic speech boundary—not continuously from raw microphone packets.
-4. ACP `agent_message_chunk` updates are forwarded through an NDJSON HTTP stream. Each completed sentence is sent to OpenAI TTS and queued for playback immediately; the next ACP text and TTS work continue while earlier audio is playing.
+4. ACP `agent_message_chunk` updates are forwarded through an NDJSON HTTP stream. The opening phrase can start TTS at a comma, colon, or semicolon after at least 40 characters; subsequent chunks use completed sentences. All TTS requests use the configured gateway. PCM audio arrives in 100 ms pieces and starts playing before the whole sentence has been synthesized. The browser schedules adjacent packets on its audio clock with a 150 ms initial buffer to absorb network jitter.
 5. Start speaking while the agent is talking to cancel the in-flight browser request, current ACP prompt, queued audio, and current playback, then begin a new utterance.
 
 Each call keeps one ACP session across turns, so follow-up questions retain conversational context. Hanging up closes the session; abandoned sessions expire after 15 minutes of inactivity. Audio plays through the Web Audio context activated by the Call button.
 
-This is low-latency streamed response playback, not the OpenAI Realtime API. The OpenAI TTS REST response for one sentence is still received as a completed audio buffer before that individual sentence is played. True packet-level STT/TTS requires a provider/transport that supports it and is a later adapter capability.
+The streaming path reads PCM directly from the Speech API response through the configured gateway. It uses the existing REST endpoint and does not require Realtime API support. Final user messages still use completed-recording transcription.
 
 ## Requirements
 
@@ -105,7 +105,10 @@ import {
   VoiceCallService,
 } from 'acp-phone';
 
-const speech = createOpenAiSpeechAdapters({ apiKey: process.env.OPENAI_API_KEY });
+const speech = createOpenAiSpeechAdapters({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL,
+});
 const service = new VoiceCallService({
   ...speech,
   acpSessionFactory: createConfiguredAcpSessionFactory({ targets }),
@@ -150,3 +153,14 @@ unsupported or failed loads report an error instead of silently starting over.
 Custom adapters receive `sessionId` in `createAcpSession` and should return their
 session ID alongside `prompt` and `close` to enable recovery after process exit.
 Browser storage and the server mapping must both be retained for recovery.
+
+Call notes show interim text during long utterances. The browser sends complete
+four-second WAV previews, with a short overlap to preserve words at boundaries,
+to the same transcription service through the configured gateway. Preview
+requests run one at a time and use additional transcription capacity. After your
+pause, the full recording is transcribed and its final text replaces the preview.
+Only the final voice turn goes to the ACP agent.
+
+All speech requests use the same `OPENAI_API_KEY` and required `OPENAI_BASE_URL`.
+The server does not fall back to the official OpenAI endpoint. If previews fail,
+the call continues and text appears after the pause.

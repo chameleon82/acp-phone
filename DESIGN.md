@@ -77,7 +77,7 @@ examples/web/                   configurable local browser app and HTTP server
 import { createVoiceCallService, createOpenAiSpeechAdapters } from 'acp-phone';
 
 const service = createVoiceCallService({
-  ...createOpenAiSpeechAdapters({ apiKey: process.env.OPENAI_API_KEY }),
+  ...createOpenAiSpeechAdapters({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL }),
   acpSessionFactory,
 });
 
@@ -98,7 +98,7 @@ The final exact ACP SDK call shape will be isolated inside `acp-session.js`; app
 3. The service opens the allowed ACP session and sends the final transcript.
 4. Streaming-capable ACP adapters call `onText(delta)` for every `agent_message_chunk`; the stdio adapter uses `ActiveSession.nextUpdate()` from the official SDK. Legacy adapters can supply only final `prompt()` text and fall back to a single TTS chunk.
 5. The streaming HTTP endpoint emits NDJSON events: `transcript.final`, `agent.text.delta`, `tts.audio`, `turn.completed`, or `error`.
-6. The service detects completed sentences (with a bounded long-text fallback), calls TTS for each sentence, and emits the encoded audio event without waiting for later ACP output. The browser appends it to its playback queue.
+6. The service starts the opening phrase at a natural clause boundary after at least 40 characters, then detects completed sentences (with a bounded long-text fallback), calls TTS through the configured gateway, and forwards 100 ms PCM packets as they arrive. The browser schedules these packets contiguously at 24 kHz with a 150 ms initial buffer, without waiting for a complete sentence audio file. Adapters without streaming synthesis retain completed-file playback.
 7. Detected caller speech during agent output aborts the HTTP request, terminates the per-turn ACP stdio process, clears queued audio, pauses current playback, and starts a new utterance.
 
 The default stream skips the separate reply-presenter/summarizer for incremental output; it speaks the ACP text verbatim in sentence chunks. The established `handleAudioTurn()` API preserves the original final-answer presentation/summarization flow for hosts that need it.

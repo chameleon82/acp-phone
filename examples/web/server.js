@@ -25,7 +25,7 @@ const maxAudioBytes = config.limits?.maxAudioBytes ?? 10 * 1024 * 1024;
 const allowedAudioTypes = new Set(['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav']);
 
 const openAiApiKey = requiredEnvironment('OPENAI_API_KEY');
-const openAiBaseURL = process.env.OPENAI_BASE_URL;
+const openAiBaseURL = requiredEnvironment('OPENAI_BASE_URL');
 
 const speechAdapters = createOpenAiSpeechAdapters({
     apiKey: openAiApiKey,
@@ -61,6 +61,32 @@ app.get('/api/health', (_request, response) => {
 });
 app.get('/api/targets', (_request, response) => {
     response.json({targets: config.targets.map(({id, label}) => ({id, label}))});
+});
+
+app.post('/api/calls/:targetId/transcription', upload.single('audio'), async (request, response, next) => {
+    const controller = new AbortController();
+    response.once('close', () => {
+        if (!response.writableEnded) controller.abort();
+    });
+    try {
+        if (!config.targets.some((target) => target.id === request.params.targetId)) {
+            throw new TargetNotFoundError(request.params.targetId);
+        }
+        if (!request.file) {
+            throw new VoiceCallError('Upload a supported audio file as "audio".', {code: 'AUDIO_REQUIRED', status: 400});
+        }
+        const transcript = await speechAdapters.speechToText.transcribe({
+            audio: {bytes: request.file.buffer, filename: request.file.originalname || 'preview.wav', contentType: request.file.mimetype},
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+        });
+        response.set('Cache-Control', 'no-store').json({transcript});
+    } catch (error) {
+        if (controller.signal.aborted || response.destroyed) return;
+        if (error instanceof VoiceCallError) return next(error);
+        next(new VoiceCallError('Live transcription is unavailable. Text will appear after your pause.', {
+            code: 'LIVE_TRANSCRIPTION_UNAVAILABLE', status: 502, cause: error,
+        }));
+    }
 });
 
 app.post('/api/calls/:targetId/:callId/resume', async (request, response, next) => {

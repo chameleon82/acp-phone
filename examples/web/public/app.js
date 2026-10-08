@@ -14,6 +14,7 @@ const callTimer = document.querySelector('#call-timer');
 const status = document.querySelector('#status');
 const voicePrompt = document.querySelector('#voice-prompt');
 const transcript = document.querySelector('#transcript');
+const transcriptStatus = document.querySelector('#transcript-status');
 const agentText = document.querySelector('#agent-text');
 
 const STORAGE_KEY = 'acp-phone.conversations';
@@ -49,6 +50,7 @@ let activeRequest;
 let currentAudio;
 let audioQueue = [];
 let playingQueue = false;
+let pcmPlayback;
 let callId;
 let callGeneration = 0;
 let playbackGeneration = 0;
@@ -60,6 +62,9 @@ let recoveryRequest;
 let healthRequest;
 let serverInstanceId;
 let recoveryDelay = 1000;
+let liveTranscription;
+let transcriptGeneration = 0;
+let transcriptFinalized = false;
 
 await loadTargets();
 callButton.addEventListener('click', () => state === 'ready' ? startCall() : endCall());
@@ -136,6 +141,7 @@ async function startCall() {
         if (generation !== callGeneration) return;
         setState('connected', 'Connected · listening', 'Speak normally. Your turn sends automatically after a short pause.');
         monitorVoice();
+        void startLiveTranscription();
         healthTimer = setInterval(() => { void checkConnection(); }, 5000);
         void checkConnection();
     } catch (error) {
@@ -156,6 +162,7 @@ function endCall({release = true} = {}) {
     }
     callId = undefined;
     ++callGeneration;
+    stopLiveTranscription();
     clearInterval(healthTimer);
     clearTimeout(recoveryTimer);
     healthTimer = undefined;
@@ -288,6 +295,13 @@ function beginUtterance() {
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined;
     recorder = new MediaRecorder(recordingStream, mimeType ? {mimeType} : undefined);
     recorder.startedAt = performance.now();
+    ++transcriptGeneration;
+    transcriptFinalized = false;
+    if (liveTranscription) {
+        resetLivePreview();
+        liveTranscription.token = transcriptGeneration;
+        transcript.textContent = '…';
+    }
     const chunks = [];
     const currentRecorder = recorder;
     const generation = callGeneration;
@@ -307,10 +321,12 @@ function finishUtterance() {
     recorder = undefined;
     silenceStartedAt = undefined;
     setState('thinking', 'Thinking…', 'Your voice is transcribing and the agent is responding.');
+    resetLivePreview();
     currentRecorder.stop();
 }
 
 function stopRecorder() {
+    resetLivePreview();
     if (!recorder) return;
     const currentRecorder = recorder;
     recorder = undefined;
@@ -378,6 +394,7 @@ function beginReconnect() {
     if (!callId || state === 'ready' || state === 'reconnecting') return;
     cancelAgentReply();
     stopRecorder();
+    stopLiveTranscription();
     speechStartedAt = undefined;
     silenceStartedAt = undefined;
     recoveryDelay = 1000;
@@ -405,6 +422,7 @@ async function reconnectCall() {
         serverInstanceId = undefined;
         setState('connected', muted ? 'Microphone muted' : 'Connected · listening',
             muted ? 'Unmute when you are ready to speak.' : 'Connection restored. Speak to continue this conversation.');
+        void startLiveTranscription();
     } catch {
         if (generation === callGeneration && !request.signal.aborted) {
             recoveryDelay = Math.min(recoveryDelay * 2, 5000);
@@ -437,7 +455,10 @@ async function checkConnection() {
 }
 
 function handleStreamEvent(event) {
-    if (event.type === 'transcript.final') transcript.textContent = event.transcript;
+    if (event.type === 'transcript.final') {
+        transcriptFinalized = true;
+        transcript.textContent = event.transcript;
+    }
     if (event.type === 'turn.completed') agentText.textContent = event.agentText;
     if (event.type === 'agent.text.delta') agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
     if (event.type === 'tts.audio') {
@@ -449,9 +470,186 @@ function handleStreamEvent(event) {
     });
 }
 
+async function startLiveTranscription() {
+    if (!recordingStream || !audioContext || liveTranscription || state === 'ready' || state === 'reconnecting') return;
+    const context = audioContext;
+    const generation = callGeneration;
+    if (!context.audioWorklet || typeof AudioWorkletNode === 'undefined') {
+        transcriptStatus.textContent = 'Text appears after your pause.';
+        return;
+    }
+    try {
+        await context.audioWorklet.addModule('/pcm-capture.js');
+        if (generation !== callGeneration || state === 'reconnecting') return;
+        const source = context.createMediaStreamSource(recordingStream);
+        const node = new AudioWorkletNode(context, 'pcm-capture');
+        const output = context.createGain();
+        output.gain.value = 0;
+        source.connect(node).connect(output).connect(context.destination);
+        const preview = {source, node, output, sampleRate: context.sampleRate,
+            samples: new Float32Array(0), text: '', token: recorder ? transcriptGeneration : undefined};
+        liveTranscription = preview;
+        transcriptStatus.textContent = 'Text updates while you speak.';
+        node.port.onmessage = ({data}) => {
+            if (liveTranscription !== preview || !recorder || muted || preview.token === undefined) return;
+            const combined = new Float32Array(preview.samples.length + data.length);
+            combined.set(preview.samples);
+            combined.set(data, preview.samples.length);
+            // Keep memory bounded if the gateway is slow during a long utterance.
+            preview.samples = combined.slice(-preview.sampleRate * 30);
+            void updateLivePreview(preview);
+        };
+    } catch {
+        if (generation === callGeneration) transcriptStatus.textContent = 'Text appears after your pause.';
+    }
+}
+
+async function updateLivePreview(preview) {
+    const count = Math.round(preview.sampleRate * 4);
+    if (preview.request || preview.token === undefined || preview.samples.length < count ||
+        Date.now() < (preview.retryAfter || 0)) return;
+    const token = preview.token;
+    const audio = encodePreviewWav(preview.samples.slice(0, count), preview.sampleRate);
+    // Repeat 350 ms at boundaries so the preview can recognize split words.
+    preview.samples = preview.samples.slice(count - Math.round(preview.sampleRate * PRE_ROLL_MS / 1000));
+    const request = new AbortController();
+    preview.request = request;
+    const form = new FormData();
+    form.append('audio', audio, 'preview.wav');
+    try {
+        const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/transcription`, {
+            method: 'POST', body: form,
+            signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]),
+        });
+        if (!response.ok) throw new Error('Preview unavailable');
+        const {transcript: text} = await response.json();
+        if (request.signal.aborted || liveTranscription !== preview || preview.token !== token ||
+            transcriptGeneration !== token || transcriptFinalized) return;
+        preview.text = mergePreviewText(preview.text, text);
+        transcript.textContent = preview.text || '…';
+        transcriptStatus.textContent = 'Text updates while you speak.';
+    } catch {
+        if (!request.signal.aborted && liveTranscription === preview && preview.token === token) {
+            preview.retryAfter = Date.now() + 5000;
+            transcriptStatus.textContent = 'Text appears after your pause.';
+        }
+    } finally {
+        if (preview.request === request) {
+            preview.request = undefined;
+            if (liveTranscription === preview && preview.token === token) void updateLivePreview(preview);
+        }
+    }
+}
+
+function mergePreviewText(previous, next) {
+    const left = previous.trim().split(/\s+/).filter(Boolean);
+    const right = String(next ?? '').trim().split(/\s+/).filter(Boolean);
+    const normalize = (word) => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    let overlap = 0;
+    for (let size = 1; size <= Math.min(left.length, right.length, 12); size++) {
+        if (left.slice(-size).every((word, index) => normalize(word) === normalize(right[index]))) overlap = size;
+    }
+    return [...left, ...right.slice(overlap)].join(' ');
+}
+
+function encodePreviewWav(samples, rate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const text = (offset, value) => {
+        for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+    };
+    text(0, 'RIFF'); view.setUint32(4, buffer.byteLength - 8, true); text(8, 'WAVE');
+    text(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+    view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    text(36, 'data'); view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+        const value = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(44 + i * 2, Math.round(value * (value < 0 ? 32768 : 32767)), true);
+    }
+    return new Blob([buffer], {type: 'audio/wav'});
+}
+
+function resetLivePreview() {
+    const preview = liveTranscription;
+    if (!preview) return;
+    preview.token = undefined;
+    preview.request?.abort();
+    preview.request = undefined;
+    preview.samples = new Float32Array(0);
+    preview.text = '';
+    preview.retryAfter = 0;
+}
+
+function stopLiveTranscription() {
+    const preview = liveTranscription;
+    resetLivePreview();
+    liveTranscription = undefined;
+    if (preview) {
+        preview.node.port.onmessage = null;
+        preview.source.disconnect();
+        preview.node.disconnect();
+        preview.output.disconnect();
+    }
+    transcriptStatus.textContent = 'Text appears after your pause.';
+}
+
 function enqueueAudio(event) {
+    if (event.encoding === 'pcm_s16le' && audioContext) {
+        void enqueuePcmAudio(event);
+        return;
+    }
     audioQueue.push(event);
     if (!playingQueue) void playAudioQueue();
+}
+
+async function enqueuePcmAudio(event) {
+    const generation = playbackGeneration;
+    if (!pcmPlayback) {
+        const sources = new Set();
+        pcmPlayback = {
+            sources, pending: 0, nextTime: audioContext.currentTime + 0.15,
+            set muted(value) { for (const source of sources) source.muted = value; },
+            async play() { await audioContext.resume(); },
+            pause() { for (const source of sources) source.pause(); sources.clear(); },
+        };
+    }
+    const playback = pcmPlayback;
+    currentAudio = playback;
+    playingQueue = true;
+    playback.pending++;
+    try {
+        const audio = await createVoicePlayback(event, audioContext);
+        if (generation !== playbackGeneration) { audio.pause(); return; }
+        playback.sources.add(audio);
+        audio.muted = !speakerEnabled;
+        audio.addEventListener('ended', () => {
+            audio.pause();
+            playback.sources.delete(audio);
+            finishPcmPlayback(playback, generation);
+        }, {once: true});
+        // Schedule adjacent packets on the audio clock, before the previous one ends.
+        // A small initial buffer absorbs uneven network delivery.
+        const startTime = Math.max(playback.nextTime, audioContext.currentTime + 0.015);
+        playback.nextTime = startTime + base64Bytes(event.audioBase64).length / (2 * event.sampleRate);
+        await audio.play(startTime);
+    } catch (error) {
+        if (generation === playbackGeneration) {
+            cancelAgentReply();
+            setState('connected', error.message, 'The response is available in Call notes. Speak to continue.');
+        }
+    } finally {
+        playback.pending--;
+        finishPcmPlayback(playback, generation);
+    }
+}
+
+function finishPcmPlayback(playback, generation) {
+    if (generation !== playbackGeneration || playback.pending || playback.sources.size) return;
+    pcmPlayback = undefined;
+    currentAudio = undefined;
+    playingQueue = false;
+    if (state === 'playing') setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
 }
 
 async function playAudioQueue() {
@@ -501,7 +699,17 @@ async function playAudioQueue() {
 }
 
 async function createVoicePlayback(event, context) {
-    const buffer = await context.decodeAudioData(base64Bytes(event.audioBase64).buffer);
+    const bytes = base64Bytes(event.audioBase64);
+    let buffer;
+    if (event.encoding === 'pcm_s16le') {
+        if (!bytes.length || bytes.length % 2 || event.sampleRate !== 24000) throw new Error('Invalid streamed audio.');
+        buffer = context.createBuffer(1, bytes.length / 2, event.sampleRate);
+        const samples = buffer.getChannelData(0);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+    } else {
+        buffer = await context.decodeAudioData(bytes.buffer);
+    }
     const source = context.createBufferSource();
     const gain = context.createGain();
     source.buffer = buffer;
@@ -511,9 +719,9 @@ async function createVoicePlayback(event, context) {
     return {
         set muted(value) { gain.gain.value = value ? 0 : 1; },
         addEventListener(type, listener, options) { source.addEventListener(type, listener, options); },
-        async play() {
+        async play(startTime) {
             await context.resume();
-            if (!started && !stopped) { source.start(); started = true; }
+            if (!started && !stopped) { source.start(startTime); started = true; }
         },
         pause() {
             if (stopped) return;
@@ -531,6 +739,7 @@ function cancelAgentReply() {
     ++playbackGeneration;
     audioQueue = [];
     currentAudio?.pause();
+    pcmPlayback = undefined;
     stopPlayback?.();
     stopPlayback = undefined;
     failPlayback = undefined;

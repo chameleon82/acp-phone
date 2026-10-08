@@ -180,11 +180,13 @@ export class VoiceCallService {
 
         try {
             let pendingSpeech = '';
+            let firstSpeech = true;
             for await (const chunk of chunks) {
                 yield {type: 'agent.text.delta', delta: chunk};
                 pendingSpeech += chunk;
-                for (const sentence of takeSpeakableSentences(pendingSpeech)) {
+                for (const sentence of takeSpeakableSentences(pendingSpeech, firstSpeech)) {
                     pendingSpeech = pendingSpeech.slice(sentence.length);
+                    firstSpeech = false;
                     yield* this.#synthesizeStreamChunk({text: sentence, call, signal, progress});
                 }
             }
@@ -213,6 +215,26 @@ export class VoiceCallService {
         if (!speakableText) return;
         progress('tts.chunk.started', {characters: speakableText.length});
         const startedAt = this.now();
+        if (this.textToSpeech.synthesizeStream) {
+            let audioBytes = 0;
+            for await (const audio of this.textToSpeech.synthesizeStream({text: speakableText, call, signal})) {
+                if (!audio?.bytes?.length || !audio.contentType) {
+                    throw new VoiceCallError('The speech provider returned invalid audio.', {
+                        code: 'INVALID_SYNTHESIZED_AUDIO', status: 502,
+                    });
+                }
+                if (!audioBytes) progress('tts.first_audio', {durationMs: elapsed(this.now(), startedAt)});
+                audioBytes += audio.bytes.length;
+                yield {type: 'tts.audio', text: audioBytes === audio.bytes.length ? speakableText : '',
+                    contentType: audio.contentType, encoding: audio.encoding, sampleRate: audio.sampleRate,
+                    audioBase64: audio.bytes.toString('base64')};
+            }
+            if (!audioBytes) throw new VoiceCallError('The speech provider returned no audio.', {
+                code: 'INVALID_SYNTHESIZED_AUDIO', status: 502,
+            });
+            progress('tts.chunk.completed', {durationMs: elapsed(this.now(), startedAt), audioBytes});
+            return;
+        }
         const audio = await this.textToSpeech.synthesize({text: speakableText, call, signal});
         if (!audio?.bytes || !audio.contentType) {
             throw new VoiceCallError('The speech provider returned invalid audio.', {
@@ -247,8 +269,17 @@ function elapsed(now, startedAt) {
     return Math.max(0, Math.round(now - startedAt));
 }
 
-function takeSpeakableSentences(text) {
+function takeSpeakableSentences(text, firstSpeech = false) {
     const match = text.match(/^(.*?[.!?](?:[\s\n]+|$))/);
+    // Begin a long opening sentence at a natural clause boundary. Keep short
+    // greetings and the rest of the response together for consistent prosody.
+    if (firstSpeech) {
+        const opening = text.split(/[.!?]/, 1)[0];
+        for (const boundary of opening.matchAll(/[,;:]\s+/g)) {
+            const clause = text.slice(0, boundary.index + boundary[0].length);
+            if (clause.trim().length >= 40) return [clause];
+        }
+    }
     if (match?.[1].trim()) return [match[1]];
     if (text.length >= 280) {
         const boundary = Math.max(text.lastIndexOf(' ', 240), 1);

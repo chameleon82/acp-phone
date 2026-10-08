@@ -308,3 +308,152 @@ test('application errors do not automatically resubmit a voice turn', async () =
     assert.equal(page.timeouts.size, 0);
     assert.match(page.elements.get('#status').textContent, /No speech recognized/);
 });
+
+test('long speech updates call notes through preview uploads and merges overlapping words', async () => {
+    let uploads = 0;
+    const page = browser({fetch: async (url, {body}) => {
+        assert.equal(url, '/api/calls/agent-a/transcription');
+        const file = body.get('audio');
+        assert.equal(file.type, 'audio/wav');
+        const view = new DataView(await file.arrayBuffer());
+        assert.equal(view.getUint32(24, true), 16000);
+        assert.equal(view.getUint32(40, true), 4 * 16000 * 2);
+        return {ok: true, json: async () => ({transcript: ++uploads === 1 ? 'Hello world' : 'world, keep speaking'})};
+    }});
+    page.context.inputSamples = new Float32Array(16000 * 4);
+    page.elements.get('#target').value = 'agent-a';
+    page.run(`
+        state = 'recording'; transcriptGeneration = 1;
+        const preview = {samples: inputSamples, sampleRate: 16000, token: 1, text: ''};
+        liveTranscription = preview;
+    `);
+    await page.run('updateLivePreview(preview)');
+    assert.equal(page.elements.get('#transcript').textContent, 'Hello world');
+    page.run('preview.samples = inputSamples;');
+    await page.run('updateLivePreview(preview)');
+    assert.equal(page.elements.get('#transcript').textContent, 'Hello world keep speaking');
+    assert.equal(uploads, 2);
+});
+
+test('late preview responses cannot overwrite final text or the next utterance', async () => {
+    let respond;
+    const page = browser({fetch: () => new Promise(resolve => {respond = resolve;})});
+    page.context.inputSamples = new Float32Array(16000 * 4);
+    page.run(`
+        transcriptGeneration = 1;
+        const preview = {samples: inputSamples, sampleRate: 16000, token: 1, text: ''};
+        liveTranscription = preview;
+    `);
+    const pending = page.run('updateLivePreview(preview)');
+    page.run(`
+        resetLivePreview();
+        handleStreamEvent({type: 'transcript.final', transcript: 'Final text.'});
+    `);
+    respond({ok: true, json: async () => ({transcript: 'Late preview'})});
+    await pending;
+    assert.equal(page.elements.get('#transcript').textContent, 'Final text.');
+});
+
+test('muting cancels a preview upload and clears buffered speech', () => {
+    const page = browser();
+    page.run(`
+        state = 'recording';
+        const previewRequest = new AbortController();
+        liveTranscription = {token: 1, request: previewRequest, samples: new Float32Array(100), text: 'old'};
+        toggleMicrophone();
+    `);
+    assert.equal(page.run('previewRequest.signal.aborted'), true);
+    assert.equal(page.run('liveTranscription.samples.length'), 0);
+    assert.equal(page.run('liveTranscription.token'), undefined);
+});
+
+test('preview WAV preserves sample rate, length and signed sample values', async () => {
+    const page = browser();
+    const blob = page.run('encodePreviewWav(new Float32Array([-2, -1, 0, 1, 2]), 48000)');
+    const view = new DataView(await blob.arrayBuffer());
+    assert.equal(view.byteLength, 54);
+    assert.equal(view.getUint32(24, true), 48000);
+    assert.equal(view.getUint16(22, true), 1);
+    assert.equal(view.getUint16(34, true), 16);
+    assert.deepEqual(Array.from({length: 5}, (_, i) => view.getInt16(44 + i * 2, true)), [-32768, -32768, 0, 32767, 32767]);
+});
+
+test('microphone capture preserves samples across audio processing block boundaries', async () => {
+    const chunks = [];
+    let Capture;
+    const context = vm.createContext({
+        AudioWorkletProcessor: class {port = {postMessage(samples) {chunks.push([...samples]);}};},
+        registerProcessor(name, processor) {assert.equal(name, 'pcm-capture'); Capture = processor;},
+    });
+    vm.runInContext(await readFile(new URL('../examples/web/public/pcm-capture.js', import.meta.url), 'utf8'), context);
+    const capture = new Capture();
+    for (let index = 0; index < 65; index++) {
+        const samples = Float32Array.from({length: 128}, (_, i) => index * 128 + i);
+        assert.equal(capture.process([[samples]]), true);
+    }
+    assert.equal(chunks.length, 2);
+    assert.deepEqual(chunks.flat(), Array.from({length: 8192}, (_, i) => i));
+});
+
+test('streamed PCM plays directly without waiting for a complete encoded audio file', async () => {
+    let samples;
+    let started = 0;
+    let stopped = 0;
+    const source = {connect: () => ({connect() {}}), addEventListener() {},
+        start() {started++;}, stop() {stopped++;}, disconnect() {}};
+    const audioContext = {
+        createBuffer(channels, length, rate) {
+            assert.equal(channels, 1); assert.equal(rate, 24000);
+            samples = new Float32Array(length);
+            return {getChannelData: () => samples};
+        },
+        createBufferSource: () => source,
+        createGain: () => ({gain: {}, disconnect() {}}),
+        async resume() {},
+        decodeAudioData() {throw new Error('PCM must not use file decoding');},
+    };
+    const page = browser();
+    page.context.pcmContext = audioContext;
+    const bytes = Buffer.alloc(6);
+    bytes.writeInt16LE(-32768, 0); bytes.writeInt16LE(0, 2); bytes.writeInt16LE(32767, 4);
+    page.context.pcmEvent = {encoding: 'pcm_s16le', sampleRate: 24000, audioBase64: bytes.toString('base64')};
+    const playback = await page.run('createVoicePlayback(pcmEvent, pcmContext)');
+    assert.deepEqual([...samples], [-1, 0, 32767 / 32768]);
+    await playback.play();
+    assert.equal(started, 1);
+    playback.pause();
+    assert.equal(stopped, 1);
+});
+
+test('PCM packets are scheduled contiguously before playback ends and all stop on interruption', async () => {
+    const sources = [];
+    const context = {
+        currentTime: 10,
+        createBuffer(channels, length) {return {getChannelData: () => new Float32Array(length)};},
+        createBufferSource() {
+            const source = {connect: () => ({connect() {}}), disconnect() {},
+                addEventListener(type, listener) {this.ended = listener;},
+                start(time) {this.startTime = time;}, stop() {this.stopped = true;}};
+            sources.push(source);
+            return source;
+        },
+        createGain: () => ({gain: {}, disconnect() {}}),
+        async resume() {},
+    };
+    const page = browser();
+    page.context.scheduledContext = context;
+    page.context.packet = {encoding: 'pcm_s16le', sampleRate: 24000, audioBase64: Buffer.alloc(4800).toString('base64')};
+    page.run("audioContext = scheduledContext; state = 'playing';");
+    await page.run('Promise.all([enqueuePcmAudio(packet), enqueuePcmAudio(packet), enqueuePcmAudio(packet)])');
+    assert.equal(sources.length, 3);
+    assert.ok(Math.abs(sources[0].startTime - 10.15) < 1e-9);
+    assert.ok(Math.abs(sources[1].startTime - 10.25) < 1e-9);
+    assert.ok(Math.abs(sources[2].startTime - 10.35) < 1e-9);
+    sources[0].ended();
+    assert.equal(page.run('playingQueue'), true);
+    page.run('cancelAgentReply()');
+    assert.ok(sources.every(source => source.stopped));
+    sources[1].ended();
+    assert.equal(page.run('pcmPlayback'), undefined);
+    assert.equal(page.run('playingQueue'), false);
+});
