@@ -22,6 +22,10 @@ Each call keeps one ACP session across turns, so follow-up questions retain conv
 
 The streaming path reads PCM directly from the Speech API response through the configured gateway. It uses the existing REST endpoint and does not require Realtime API support. Final user messages still use completed-recording transcription.
 
+Recordings with an empty transcript, punctuation only, or an explicit noise/silence annotation are skipped before ACP is opened. The stream ends with `turn.skipped`, and the browser quietly resumes listening without generating an agent reply.
+
+Microphone activation keeps the current agent reply playing. During an interruption, the browser transcribes an initial 800 ms preview and, if needed, a second 1.2 second preview through the configured gateway. Recognized words cancel the previous reply while recording continues; empty/noise previews keep it playing. Only the completed caller message starts the next ACP turn. Interruption timing depends on gateway transcription latency; unsupported microphone preview capture falls back to final transcription.
+
 If the first audible response takes more than 2 seconds, the browser requests a fresh short acknowledgement based on the current caller message and available reply text. Text generation and synthesis both use the configured gateway. The prompt asks for natural wording without invented progress and includes the previous acknowledgement to discourage repetition. The cue plays at most once per turn, stops when reply audio arrives, and is cancelled on interruption, hangup, reconnect, or speaker mute. The cue shares the same initial audio buffer as the response and uses short conversational wording and streams PCM as soon as it arrives, with a slightly faster speaking rate. Text generation and first audio still take additional time; it never blocks the agent response.
 
 ## Requirements

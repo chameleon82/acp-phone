@@ -125,6 +125,33 @@ test('rejects an empty transcription before opening ACP', async () => {
     assert.equal(acpOpened, false);
 });
 
+test('stream skips recordings without recognized speech before ACP or synthesis', async () => {
+    for (const transcript of ['', '  ', '…?!', '[noise]', '[тишина]']) {
+        const voiceCallService = service({
+            speechToText: {transcribe: async () => transcript},
+            acpSessionFactory: {async open() {assert.fail('Noise must not open ACP');}},
+            textToSpeech: {async synthesize() {assert.fail('Noise must not synthesize a response');}},
+        });
+        const events = [];
+        for await (const event of voiceCallService.handleAudioTurnStream({audio, target: {id: 'local-agent'}})) events.push(event);
+        assert.deepEqual(events, [{type: 'turn.skipped', reason: 'no_speech'}]);
+    }
+});
+
+test('short recognized answers in different languages still reach ACP', async () => {
+    for (const transcript of ['Да', 'Нет', '7', '好', 'ใช่']) {
+        let received;
+        const voiceCallService = service({
+            speechToText: {transcribe: async () => transcript},
+            acpSessionFactory: {async open() {return {
+                async prompt({text}) {received = text; return 'Understood.';}, async close() {},
+            };}},
+        });
+        for await (const event of voiceCallService.handleAudioTurnStream({audio, target: {id: 'local-agent'}})) {}
+        assert.equal(received, transcript);
+    }
+});
+
 test('closes ACP sessions when prompting fails', async () => {
     let closed = false;
     const voiceCallService = service({

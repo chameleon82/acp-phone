@@ -489,6 +489,120 @@ test('waiting cue starts only after a delay and stops immediately for the actual
     assert.equal(page.run('thinkingAudio'), undefined);
 });
 
+test('a noise-only recording ends normally and returns to listening without a waiting cue', async () => {
+    const page = browser();
+    page.run("state = 'thinking'; startThinkingNotice();");
+    page.context.noiseStream = new Response(JSON.stringify({type: 'turn.skipped', reason: 'no_speech'}) + '\n').body;
+    await page.run('consumeStream(noiseStream, new AbortController().signal)');
+    assert.equal(page.run('state'), 'connected');
+    assert.equal(page.timeouts.size, 0);
+    assert.equal(page.run('transcriptFinalized'), true);
+    assert.equal(page.elements.get('#transcript').textContent, '—');
+});
+
+test('noise does not abort or pause the agent response already playing', async () => {
+    const audio = {pauses: 0, pause() {this.pauses++;}};
+    const oldRequest = new AbortController();
+    const page = browser({navigator: {language: 'ru-RU'}, fetch: async () => new Response(
+        JSON.stringify({type: 'turn.skipped', reason: 'no_speech'}) + '\n')});
+    page.context.oldRequest = oldRequest;
+    page.context.oldAudio = audio;
+    page.run("state = 'thinking'; activeRequest = oldRequest; currentAudio = oldAudio; playingQueue = true; agentText.textContent = 'Previous response';");
+    await page.run("sendUtterance(['noise'], 'audio/webm')");
+    assert.equal(oldRequest.signal.aborted, false);
+    assert.equal(audio.pauses, 0);
+    assert.equal(page.run('playingQueue'), true);
+    assert.equal(page.run('state'), 'playing');
+    assert.equal(page.elements.get('#agent-text').textContent, 'Previous response');
+    assert.equal(page.timeouts.size, 0);
+});
+
+test('microphone activation alone keeps the agent audio and request running', () => {
+    const oldRequest = new AbortController();
+    const audio = {pause() {assert.fail('VAD alone must not pause agent audio');}};
+    const page = browser({performance: {now: () => 100}, MediaRecorder: class {
+        static isTypeSupported() {return true;}
+        addEventListener() {}
+        start() {this.state = 'recording';}
+    }});
+    page.context.oldRequest = oldRequest;
+    page.context.oldAudio = audio;
+    page.run("state = 'playing'; recordingStream = {}; activeRequest = oldRequest; currentAudio = oldAudio; playingQueue = true; beginUtterance();");
+    assert.equal(oldRequest.signal.aborted, false);
+    assert.equal(page.run('playingQueue'), true);
+    assert.equal(page.run('recorder.state'), 'recording');
+});
+
+test('first recognized preview words interrupt the agent while recording continues', async () => {
+    const previous = new AbortController();
+    const audio = {pauses: 0, pause() {this.pauses++;}};
+    let uploads = 0;
+    const page = browser({fetch: async (url, {body}) => {
+        assert.match(url, /\/transcription$/);
+        const view = new DataView(await body.get('audio').arrayBuffer());
+        assert.equal(view.getUint32(40, true), 0.8 * 16000 * 2);
+        uploads++;
+        return {ok: true, async json() {return {transcript: 'Я хочу'};}};
+    }});
+    page.context.previous = previous;
+    page.context.oldAudio = audio;
+    page.run(`
+        state = 'recording'; transcriptGeneration = 1; recorder = {state: 'recording'};
+        activeRequest = previous; currentAudio = oldAudio; playingQueue = true;
+        const preview = {samples: new Float32Array(12800), sampleRate: 16000, token: 1, text: ''};
+        liveTranscription = preview;
+    `);
+    await page.run('updateLivePreview(preview)');
+    assert.equal(previous.signal.aborted, true);
+    assert.equal(audio.pauses, 1);
+    assert.equal(page.run('recorder.state'), 'recording');
+    assert.equal(page.run('state'), 'recording');
+    assert.equal(uploads, 1);
+});
+
+test('short noise previews keep agent audio running', async () => {
+    for (const text of ['', '…', '[noise]']) {
+        const previous = new AbortController();
+        const page = browser({fetch: async () => ({ok: true, async json() {return {transcript: text};}})});
+        page.context.previous = previous;
+        page.run(`
+            state = 'recording'; transcriptGeneration = 1; activeRequest = previous; playingQueue = true;
+            currentAudio = {pause() {throw new Error('Noise must not stop audio');}};
+            const preview = {samples: new Float32Array(12800), sampleRate: 16000, token: 1, text: ''};
+            liveTranscription = preview;
+        `);
+        await page.run('updateLivePreview(preview)');
+        assert.equal(previous.signal.aborted, false);
+        assert.equal(page.run('playingQueue'), true);
+    }
+});
+
+test('recognized speech interrupts the previous response only when transcription arrives', async () => {
+    const audio = {pauses: 0, pause() {this.pauses++;}};
+    const oldRequest = new AbortController();
+    let controller;
+    let requested;
+    const started = new Promise(resolve => {requested = resolve;});
+    const page = browser({navigator: {language: 'ru-RU'}, fetch: async () => {
+        requested();
+        return {ok: true, body: new ReadableStream({start(stream) {controller = stream;}})};
+    }});
+    page.context.oldRequest = oldRequest;
+    page.context.oldAudio = audio;
+    page.run("state = 'thinking'; activeRequest = oldRequest; currentAudio = oldAudio; playingQueue = true;");
+    const sending = page.run("sendUtterance(['speech'], 'audio/webm')");
+    await started;
+    assert.equal(oldRequest.signal.aborted, false);
+    assert.equal(audio.pauses, 0);
+    controller.enqueue(new TextEncoder().encode(JSON.stringify({type: 'transcript.final', transcript: 'Да'}) + '\n'
+        + JSON.stringify({type: 'turn.completed', agentText: 'New response'}) + '\n'));
+    controller.close();
+    await sending;
+    assert.equal(oldRequest.signal.aborted, true);
+    assert.equal(audio.pauses, 1);
+    assert.equal(page.elements.get('#agent-text').textContent, 'New response');
+});
+
 test('interruption cancels the waiting timer and discards late cue audio', async () => {
     let resolveFetch;
     let signal;

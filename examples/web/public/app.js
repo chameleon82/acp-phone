@@ -47,6 +47,7 @@ let timerId;
 let muted = false;
 let speakerEnabled = true;
 let activeRequest;
+let candidateRequest;
 let currentAudio;
 let audioQueue = [];
 let playingQueue = false;
@@ -279,7 +280,6 @@ function monitorVoice() {
                 if (!speechStartedAt) speechStartedAt = now;
                 if (now - speechStartedAt >= START_SPEECH_MS) beginUtterance();
             } else if (state === 'playing' || state === 'thinking') {
-                cancelAgentReply();
                 setState('recording', 'Listening', 'I heard you. Continue speaking; your turn sends after a pause.');
             }
             return;
@@ -296,7 +296,8 @@ function monitorVoice() {
 
 function beginUtterance() {
     if (!recordingStream || muted || recorder) return;
-    cancelAgentReply();
+    candidateRequest?.abort();
+    candidateRequest = undefined;
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined;
     recorder = new MediaRecorder(recordingStream, mimeType ? {mimeType} : undefined);
     recorder.startedAt = performance.now();
@@ -342,15 +343,13 @@ function stopRecorder() {
 async function sendUtterance(chunks, mimeType) {
     const blob = new Blob(chunks, {type: mimeType || 'audio/webm'});
     if (!blob.size || state === 'ready' || state === 'reconnecting') return;
-    cancelAgentReply();
-    agentText.textContent = '—';
+    candidateRequest?.abort();
     const form = new FormData();
     form.append('audio', blob, blob.type.includes('mp4') ? 'turn.mp4' : 'turn.webm');
     form.append('callId', callId);
     form.append('locale', navigator.language.split('-')[0]);
     const request = new AbortController();
-    activeRequest = request;
-    startThinkingNotice();
+    candidateRequest = request;
     try {
         const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/turn/stream`, {
             method: 'POST', body: form, signal: request.signal,
@@ -359,7 +358,27 @@ async function sendUtterance(chunks, mimeType) {
             const {error} = await response.json().catch(() => ({error: {message: 'Voice turn failed.'}}));
             throw Object.assign(new Error(error.message), {retryable: response.status >= 500});
         }
-        await consumeStream(response.body, request.signal);
+        await consumeStream(response.body, request.signal, (event) => {
+            if (request.signal.aborted) return;
+            if (candidateRequest === request && event.type !== 'turn.skipped' && event.type !== 'error') {
+                // STT confirms speech before we cancel the previous agent turn.
+                cancelAgentReply({preserveCandidate: true});
+                candidateRequest = undefined;
+                activeRequest = request;
+                agentText.textContent = '—';
+                setState('thinking', 'Thinking…', 'The agent is responding.');
+                startThinkingNotice();
+            }
+            if (event.type === 'turn.skipped' && candidateRequest === request) {
+                candidateRequest = undefined;
+                transcriptFinalized = true;
+                transcript.textContent = '—';
+                if (playingQueue) setState('playing', 'Agent is speaking', 'You can interrupt naturally by speaking.');
+                else setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
+                return;
+            }
+            handleStreamEvent(event);
+        });
         if (request.signal.aborted) return;
         if (state !== 'ready' && !playingQueue) {
             setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
@@ -370,6 +389,7 @@ async function sendUtterance(chunks, mimeType) {
             else setState('connected', error.message, 'Speak again to try another turn.');
         }
     } finally {
+        if (candidateRequest === request) candidateRequest = undefined;
         if (activeRequest === request) {
             stopThinkingNotice();
             activeRequest = undefined;
@@ -377,14 +397,14 @@ async function sendUtterance(chunks, mimeType) {
     }
 }
 
-async function consumeStream(body, signal) {
+async function consumeStream(body, signal, onEvent = handleStreamEvent) {
     const reader = body.pipeThrough(new TextDecoderStream()).getReader();
     let remainder = '';
     let completed = false;
     const consume = (line) => {
         const event = JSON.parse(line);
-        if (event.type === 'turn.completed') completed = true;
-        handleStreamEvent(event);
+        if (event.type === 'turn.completed' || event.type === 'turn.skipped') completed = true;
+        onEvent(event);
     };
     while (true) {
         const {value, done} = await reader.read();
@@ -464,6 +484,13 @@ async function checkConnection() {
 }
 
 function handleStreamEvent(event) {
+    if (event.type === 'turn.skipped') {
+        stopThinkingNotice();
+        transcriptFinalized = true;
+        transcript.textContent = '—';
+        setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
+        return;
+    }
     if (event.type === 'transcript.final') {
         transcriptFinalized = true;
         transcript.textContent = event.transcript;
@@ -576,10 +603,14 @@ async function startLiveTranscription() {
 }
 
 async function updateLivePreview(preview) {
-    const count = Math.round(preview.sampleRate * 4);
+    const detectingInterruption = (playingQueue || activeRequest) && (preview.interruptAttempts || 0) < 2;
+    const seconds = detectingInterruption ? (preview.interruptAttempts ? 1.2 : 0.8) : 4;
+    const count = Math.round(preview.sampleRate * seconds);
     if (preview.request || preview.token === undefined || preview.samples.length < count ||
         Date.now() < (preview.retryAfter || 0)) return;
     const token = preview.token;
+    const replyGeneration = playbackGeneration;
+    if (detectingInterruption) preview.interruptAttempts = (preview.interruptAttempts || 0) + 1;
     const audio = encodePreviewWav(preview.samples.slice(0, count), preview.sampleRate);
     // Repeat 350 ms at boundaries so the preview can recognize split words.
     preview.samples = preview.samples.slice(count - Math.round(preview.sampleRate * PRE_ROLL_MS / 1000));
@@ -596,6 +627,10 @@ async function updateLivePreview(preview) {
         const {transcript: text} = await response.json();
         if (request.signal.aborted || liveTranscription !== preview || preview.token !== token ||
             transcriptGeneration !== token || transcriptFinalized) return;
+        if (detectingInterruption && replyGeneration === playbackGeneration && hasRecognizedSpeech(text)) {
+            cancelAgentReply({preserveCandidate: true});
+            if (recorder) setState('recording', 'Listening', 'I heard you. Continue speaking; your turn sends after a pause.');
+        }
         preview.text = mergePreviewText(preview.text, text);
         transcript.textContent = preview.text || '…';
         transcriptStatus.textContent = 'Text updates while you speak.';
@@ -610,6 +645,11 @@ async function updateLivePreview(preview) {
             if (liveTranscription === preview && preview.token === token) void updateLivePreview(preview);
         }
     }
+}
+
+function hasRecognizedSpeech(text) {
+    return typeof text === 'string' && /[\p{L}\p{N}]/u.test(text)
+        && !/^\s*\[(?:silence|noise|background noise|music|тишина|шум|музыка)\]\s*$/iu.test(text);
 }
 
 function mergePreviewText(previous, next) {
@@ -650,6 +690,7 @@ function resetLivePreview() {
     preview.samples = new Float32Array(0);
     preview.text = '';
     preview.retryAfter = 0;
+    preview.interruptAttempts = 0;
 }
 
 function stopLiveTranscription() {
@@ -838,7 +879,11 @@ async function createVoicePlayback(event, context) {
     };
 }
 
-function cancelAgentReply() {
+function cancelAgentReply({preserveCandidate = false} = {}) {
+    if (!preserveCandidate) {
+        candidateRequest?.abort();
+        candidateRequest = undefined;
+    }
     stopThinkingNotice();
     activeRequest?.abort();
     activeRequest = undefined;

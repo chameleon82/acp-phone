@@ -53,7 +53,7 @@ export class VoiceCallService {
         timings.transcriptionMs = elapsed(this.now(), transcriptionStartedAt);
         progress('stt.completed', {durationMs: timings.transcriptionMs, transcriptCharacters: transcript.length});
 
-        if (!transcript) {
+        if (!hasRecognizedSpeech(transcript)) {
             throw new ValidationError('No speech was recognized in the submitted audio.');
         }
 
@@ -145,7 +145,11 @@ export class VoiceCallService {
         const transcript = normalizeText(await this.speechToText.transcribe({audio, locale: call.locale, signal}));
         const transcriptionMs = elapsed(this.now(), sttStartedAt);
         progress('stt.completed', {durationMs: transcriptionMs, transcriptCharacters: transcript.length});
-        if (!transcript) throw new ValidationError('No speech was recognized in the submitted audio.');
+        if (!hasRecognizedSpeech(transcript)) {
+            progress('turn.skipped', {reason: 'no_speech'});
+            yield {type: 'turn.skipped', reason: 'no_speech'};
+            return;
+        }
         yield {type: 'transcript.final', transcript};
 
         progress('acp.connecting');
@@ -263,6 +267,11 @@ function validateInput({audio, target}) {
 
 function normalizeText(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+function hasRecognizedSpeech(text) {
+    return /[\p{L}\p{N}]/u.test(text)
+        && !/^\s*\[(?:silence|noise|background noise|music|тишина|шум|музыка)\]\s*$/iu.test(text);
 }
 
 function elapsed(now, startedAt) {
