@@ -13,7 +13,7 @@ The browser receives only target `id` and `label`; the executable command, argum
 ## Low-latency call behavior
 
 1. Tap **Call** once and grant microphone permission. The browser keeps the microphone open for the duration of the call.
-2. Browser voice-activity detection starts a recording only after speech is detected and submits it after approximately 850 ms of silence. There is no Pause-to-send control; **Mic on/off** is only an optional privacy mute.
+2. Browser voice-activity detection starts a recording after speech is detected, including a 350 ms audio buffer before detection so the first syllable is retained, and submits it after approximately 850 ms of silence. There is no Pause-to-send control; **Mic on/off** is only an optional privacy mute.
 3. The current OpenAI transcription endpoint is a completed-audio-file API, so transcription begins immediately at the automatic speech boundary—not continuously from raw microphone packets.
 4. ACP `agent_message_chunk` updates are forwarded through an NDJSON HTTP stream. Each completed sentence is sent to OpenAI TTS and queued for playback immediately; the next ACP text and TTS work continue while earlier audio is playing.
 5. Start speaking while the agent is talking to cancel the in-flight browser request, current ACP prompt, queued audio, and current playback, then begin a new utterance.

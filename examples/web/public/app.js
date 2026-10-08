@@ -28,10 +28,12 @@ function saveConversations() {
 
 const VAD_THRESHOLD = 0.025;
 const START_SPEECH_MS = 120;
+const PRE_ROLL_MS = 350;
 const END_SILENCE_MS = 850;
 const MIN_UTTERANCE_MS = 250;
 
 let microphone;
+let recordingStream;
 let audioContext;
 let analyser;
 let recorder;
@@ -171,6 +173,8 @@ function endCall({release = true} = {}) {
     vadFrame = undefined;
     microphone?.getTracks().forEach((track) => track.stop());
     microphone = undefined;
+    recordingStream?.getTracks().forEach((track) => track.stop());
+    recordingStream = undefined;
     audioContext?.close();
     audioContext = undefined;
     analyser = undefined;
@@ -237,7 +241,15 @@ async function openMicrophone(generation) {
 
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 1024;
-    audioContext.createMediaStreamSource(microphone).connect(analyser);
+    const source = audioContext.createMediaStreamSource(microphone);
+    source.connect(analyser);
+    // Detect live speech, but record delayed audio so the start includes sound
+    // from before VAD fired. The 850 ms end silence also drains this 350 ms buffer.
+    const delay = audioContext.createDelay(1);
+    delay.delayTime.value = PRE_ROLL_MS / 1000;
+    const destination = audioContext.createMediaStreamDestination();
+    source.connect(delay).connect(destination);
+    recordingStream = destination.stream;
 }
 
 function monitorVoice() {
@@ -271,10 +283,10 @@ function monitorVoice() {
 }
 
 function beginUtterance() {
-    if (!microphone || muted || recorder) return;
+    if (!recordingStream || muted || recorder) return;
     cancelAgentReply();
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined;
-    recorder = new MediaRecorder(microphone, mimeType ? {mimeType} : undefined);
+    recorder = new MediaRecorder(recordingStream, mimeType ? {mimeType} : undefined);
     recorder.startedAt = performance.now();
     const chunks = [];
     const currentRecorder = recorder;
