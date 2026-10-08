@@ -147,3 +147,11 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+.idea/
+.examples/
+acp-phone.config.json
+!acp-phone.config.example.json
+
+
+.acp-phone/
