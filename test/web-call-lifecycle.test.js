@@ -444,11 +444,21 @@ test('PCM packets are scheduled contiguously before playback ends and all stop o
     page.context.scheduledContext = context;
     page.context.packet = {encoding: 'pcm_s16le', sampleRate: 24000, audioBase64: Buffer.alloc(4800).toString('base64')};
     page.run("audioContext = scheduledContext; state = 'playing';");
-    await page.run('Promise.all([enqueuePcmAudio(packet), enqueuePcmAudio(packet), enqueuePcmAudio(packet)])');
-    assert.equal(sources.length, 3);
-    assert.ok(Math.abs(sources[0].startTime - 10.15) < 1e-9);
-    assert.ok(Math.abs(sources[1].startTime - 10.25) < 1e-9);
-    assert.ok(Math.abs(sources[2].startTime - 10.35) < 1e-9);
+    await page.run('enqueuePcmAudio(packet)');
+    assert.equal(sources[0].startTime, undefined);
+    // A delayed second packet must not leave the first one playing alone.
+    context.currentTime = 10.5;
+    await page.run('enqueuePcmAudio(packet)');
+    assert.ok(sources.every(source => source.startTime === undefined));
+    await page.run('enqueuePcmAudio(packet)');
+    assert.ok(sources.every(source => source.startTime === undefined));
+    assert.equal(page.timeouts.size, 0);
+    await page.run('enqueuePcmAudio(packet)');
+    await page.run('enqueuePcmAudio(packet)');
+    assert.equal(sources.length, 5);
+    assert.ok(Math.abs(sources[0].startTime - 10.53) < 1e-9);
+    assert.ok(Math.abs(sources[1].startTime - 10.63) < 1e-9);
+    assert.ok(Math.abs(sources[2].startTime - 10.73) < 1e-9);
     sources[0].ended();
     assert.equal(page.run('playingQueue'), true);
     page.run('cancelAgentReply()');
@@ -456,4 +466,43 @@ test('PCM packets are scheduled contiguously before playback ends and all stop o
     sources[1].ended();
     assert.equal(page.run('pcmPlayback'), undefined);
     assert.equal(page.run('playingQueue'), false);
+    // A reply shorter than the startup buffer still plays at stream completion.
+    await page.run('enqueuePcmAudio(packet)');
+    assert.equal(sources[5].startTime, undefined);
+    page.run("handleStreamEvent({type: 'turn.completed', agentText: 'Short reply.'})");
+    await page.run('pcmPlayback.flush()');
+    assert.equal(typeof sources[5].startTime, 'number');
+    page.run('cancelAgentReply()');
+});
+
+test('waiting cue starts only after a delay and stops immediately for the actual reply', async () => {
+    const cue = {plays: 0, stops: 0, addEventListener() {}, async play() {this.plays++;}, pause() {this.stops++;}};
+    const page = browser({fetch: async () => new Response(JSON.stringify({audioBase64: 'AAA=', sampleRate: 24000}) + '\n')});
+    page.context.cue = cue;
+    page.run("state = 'thinking'; audioContext = {currentTime: 0, async resume() {}}; createVoicePlayback = async () => cue; startThinkingNotice();");
+    assert.equal(cue.plays, 0);
+    assert.equal([...page.timeouts.values()][0].delay, 2000);
+    await page.retry();
+    assert.equal(cue.plays, 1);
+    page.run("enqueueAudio = () => {}; handleStreamEvent({type: 'tts.audio'});");
+    assert.equal(cue.stops, 1);
+    assert.equal(page.run('thinkingAudio'), undefined);
+});
+
+test('interruption cancels the waiting timer and discards late cue audio', async () => {
+    let resolveFetch;
+    let signal;
+    const page = browser({fetch: (url, options) => {
+        signal = options.signal;
+        return new Promise(resolve => {resolveFetch = resolve;});
+    }});
+    page.run("state = 'thinking'; audioContext = {}; startThinkingNotice(); cancelAgentReply();");
+    assert.equal(page.timeouts.size, 0);
+    page.run('startThinkingNotice()');
+    const pending = page.retry();
+    page.run('cancelAgentReply()');
+    assert.equal(signal.aborted, true);
+    resolveFetch({ok: true, async json() {return {audioBase64: 'YQ=='};}});
+    await pending;
+    assert.equal(page.run('thinkingAudio'), undefined);
 });

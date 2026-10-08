@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 dotenv.config({override: true});
 import express from 'express';
 import multer from 'multer';
+import {createThinkingAudio} from './thinking-audio.js';
 
 import {
     createConfiguredAcpSessionFactory,
@@ -46,6 +47,32 @@ const voiceCallService = new VoiceCallService({
 });
 
 const app = express();
+const thinkingAudio = createThinkingAudio({
+    present: speechAdapters.waitingPresenter.present,
+    synthesize: speechAdapters.textToSpeech.synthesize,
+    synthesizeStream: speechAdapters.textToSpeech.synthesizeStream,
+});
+app.post('/api/thinking-audio', express.json({limit: '8kb'}), async (request, response, next) => {
+    const controller = new AbortController();
+    response.once('close', () => {if (!response.writableEnded) controller.abort();});
+    try {
+        const bounded = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : '';
+        response.set({'Content-Type': 'application/x-ndjson; charset=utf-8',
+            'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no'});
+        response.flushHeaders();
+        await thinkingAudio({
+            transcript: bounded(request.body?.transcript, 1000), draft: bounded(request.body?.draft, 500),
+            previous: bounded(request.body?.previous, 180), language: bounded(request.body?.language, 20),
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+            onAudio: audio => {if (!controller.signal.aborted) response.write(`${JSON.stringify(audio)}\n`);},
+        });
+        if (!controller.signal.aborted) response.end();
+    } catch (error) {
+        if (controller.signal.aborted) return;
+        if (response.headersSent) response.end();
+        else next(error);
+    }
+});
 const serverInstanceId = crypto.randomUUID();
 const upload = multer({
     storage: multer.memoryStorage(),

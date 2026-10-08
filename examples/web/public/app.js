@@ -65,6 +65,10 @@ let recoveryDelay = 1000;
 let liveTranscription;
 let transcriptGeneration = 0;
 let transcriptFinalized = false;
+let thinkingTimer;
+let thinkingRequest;
+let thinkingAudio;
+let previousThinkingPhrase = '';
 
 await loadTargets();
 callButton.addEventListener('click', () => state === 'ready' ? startCall() : endCall());
@@ -214,6 +218,7 @@ function toggleMicrophone() {
 
 function toggleSpeaker() {
     speakerEnabled = !speakerEnabled;
+    if (!speakerEnabled) stopThinkingNotice();
     if (currentAudio) {
         currentAudio.muted = !speakerEnabled;
         if (speakerEnabled) {
@@ -345,6 +350,7 @@ async function sendUtterance(chunks, mimeType) {
     form.append('locale', navigator.language.split('-')[0]);
     const request = new AbortController();
     activeRequest = request;
+    startThinkingNotice();
     try {
         const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/turn/stream`, {
             method: 'POST', body: form, signal: request.signal,
@@ -364,7 +370,10 @@ async function sendUtterance(chunks, mimeType) {
             else setState('connected', error.message, 'Speak again to try another turn.');
         }
     } finally {
-        if (activeRequest === request) activeRequest = undefined;
+        if (activeRequest === request) {
+            stopThinkingNotice();
+            activeRequest = undefined;
+        }
     }
 }
 
@@ -459,15 +468,77 @@ function handleStreamEvent(event) {
         transcriptFinalized = true;
         transcript.textContent = event.transcript;
     }
-    if (event.type === 'turn.completed') agentText.textContent = event.agentText;
+    if (event.type === 'turn.completed') {
+        agentText.textContent = event.agentText;
+        void pcmPlayback?.flush().catch(() => cancelAgentReply());
+    }
     if (event.type === 'agent.text.delta') agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
     if (event.type === 'tts.audio') {
+        stopThinkingNotice();
         enqueueAudio(event);
         setState('playing', 'Agent is speaking', 'You can interrupt naturally by speaking.');
     }
     if (event.type === 'error') throw Object.assign(new Error(event.message), {
         retryable: event.code === 'ACP_PROCESS_FAILED',
     });
+}
+
+function startThinkingNotice() {
+    stopThinkingNotice();
+    const generation = playbackGeneration;
+    thinkingTimer = setTimeout(async () => {
+        thinkingTimer = undefined;
+        if (generation !== playbackGeneration || !speakerEnabled || state !== 'thinking' || !audioContext) return;
+        const message = transcriptFinalized ? transcript.textContent : '';
+        const language = /[а-яё]/i.test(message) || navigator.language?.startsWith('ru') ? 'ru' : 'en';
+        const request = new AbortController();
+        thinkingRequest = request;
+        let cue;
+        try {
+            const response = await fetch('/api/thinking-audio', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, signal: request.signal,
+                body: JSON.stringify({transcript: message.slice(0, 1000),
+                    draft: agentText.textContent === '—' ? '' : agentText.textContent.slice(0, 500),
+                    previous: previousThinkingPhrase, language}),
+            });
+            if (!response.ok) return;
+            cue = createPcmPlayback(audioContext);
+            if (request.signal.aborted || generation !== playbackGeneration) return;
+            thinkingAudio = cue;
+            const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+            let pending = '';
+            try {
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (request.signal.aborted || generation !== playbackGeneration) return;
+                    if (done) {await cue.flush(); break;}
+                    pending += value;
+                    const lines = pending.split('\n');
+                    pending = lines.pop();
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        const event = JSON.parse(line);
+                        if (event.text) previousThinkingPhrase = event.text;
+                        await cue.append(event);
+                    }
+                }
+            } finally {await reader.cancel().catch(() => {}); reader.releaseLock();}
+        } catch {
+            // A waiting cue is optional and must never interrupt the actual reply.
+            cue?.pause();
+        } finally {
+            if (thinkingRequest === request) thinkingRequest = undefined;
+        }
+    }, 2000);
+}
+
+function stopThinkingNotice() {
+    clearTimeout(thinkingTimer);
+    thinkingTimer = undefined;
+    thinkingRequest?.abort();
+    thinkingRequest = undefined;
+    thinkingAudio?.pause();
+    thinkingAudio = undefined;
 }
 
 async function startLiveTranscription() {
@@ -606,50 +677,84 @@ function enqueueAudio(event) {
 async function enqueuePcmAudio(event) {
     const generation = playbackGeneration;
     if (!pcmPlayback) {
-        const sources = new Set();
-        pcmPlayback = {
-            sources, pending: 0, nextTime: audioContext.currentTime + 0.15,
-            set muted(value) { for (const source of sources) source.muted = value; },
-            async play() { await audioContext.resume(); },
-            pause() { for (const source of sources) source.pause(); sources.clear(); },
-        };
+        pcmPlayback = createPcmPlayback(audioContext, () => {
+            if (generation !== playbackGeneration) return;
+            pcmPlayback = undefined;
+            currentAudio = undefined;
+            playingQueue = false;
+            if (state === 'playing') setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
+        });
     }
     const playback = pcmPlayback;
     currentAudio = playback;
     playingQueue = true;
-    playback.pending++;
+    playback.muted = !speakerEnabled;
     try {
-        const audio = await createVoicePlayback(event, audioContext);
-        if (generation !== playbackGeneration) { audio.pause(); return; }
-        playback.sources.add(audio);
-        audio.muted = !speakerEnabled;
-        audio.addEventListener('ended', () => {
-            audio.pause();
-            playback.sources.delete(audio);
-            finishPcmPlayback(playback, generation);
-        }, {once: true});
-        // Schedule adjacent packets on the audio clock, before the previous one ends.
-        // A small initial buffer absorbs uneven network delivery.
-        const startTime = Math.max(playback.nextTime, audioContext.currentTime + 0.015);
-        playback.nextTime = startTime + base64Bytes(event.audioBase64).length / (2 * event.sampleRate);
-        await audio.play(startTime);
+        await playback.append(event);
     } catch (error) {
         if (generation === playbackGeneration) {
             cancelAgentReply();
             setState('connected', error.message, 'The response is available in Call notes. Speak to continue.');
         }
-    } finally {
-        playback.pending--;
-        finishPcmPlayback(playback, generation);
     }
 }
 
-function finishPcmPlayback(playback, generation) {
-    if (generation !== playbackGeneration || playback.pending || playback.sources.size) return;
-    pcmPlayback = undefined;
-    currentAudio = undefined;
-    playingQueue = false;
-    if (state === 'playing') setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
+function createPcmPlayback(context, onIdle = () => {}) {
+    const sources = new Set();
+    let queued = [];
+    let queuedSeconds = 0;
+    let nextTime;
+    let stopped = false;
+    let muted = false;
+    let pending = 0;
+    let flushing = Promise.resolve();
+    const idle = () => {
+        if (!stopped && !pending && !queued.length && !sources.size) onIdle();
+    };
+    const playback = {
+        set muted(value) {muted = value; for (const source of sources) source.muted = value;},
+        async play() {await context.resume();},
+        pause() {
+            stopped = true;
+            for (const source of sources) source.pause();
+            sources.clear();
+            queued = [];
+        },
+        async append(event) {
+            pending++;
+            try {
+                const audio = await createVoicePlayback(event, context);
+                if (stopped) {audio.pause(); return;}
+                sources.add(audio);
+                audio.muted = muted;
+                audio.addEventListener('ended', () => {audio.pause(); sources.delete(audio); idle();}, {once: true});
+                const duration = base64Bytes(event.audioBase64).length / (2 * event.sampleRate);
+                queued.push({audio, duration});
+                queuedSeconds += duration;
+                // Buffer actual samples before starting, rather than assuming the
+                // next network packet will arrive within a fixed clock delay.
+                if (nextTime !== undefined || queuedSeconds >= 0.5 - 1e-6) await playback.flush();
+
+            } finally {pending--; idle();}
+        },
+        flush() {
+            flushing = flushing.then(async () => {
+                await context.resume();
+                if (stopped) return;
+                const ready = queued;
+                queued = [];
+                queuedSeconds = 0;
+                for (const {audio, duration} of ready) {
+                    const startTime = Math.max(nextTime ?? context.currentTime + 0.03, context.currentTime + 0.015);
+                    nextTime = startTime + duration;
+                    await audio.play(startTime);
+                    if (stopped) return;
+                }
+            });
+            return flushing;
+        },
+    };
+    return playback;
 }
 
 async function playAudioQueue() {
@@ -734,6 +839,7 @@ async function createVoicePlayback(event, context) {
 }
 
 function cancelAgentReply() {
+    stopThinkingNotice();
     activeRequest?.abort();
     activeRequest = undefined;
     ++playbackGeneration;
