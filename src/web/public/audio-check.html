@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACP Phone — проверка звука</title>
+<style>
+body {font: 18px system-ui; max-width: 680px; margin: 24px auto; padding: 16px; background: #111827; color: #f9fafb}
+button, select {font: inherit; padding: 12px; margin: 6px 0; width: 100%}
+pre {white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px}
+</style>
+<h1>Проверка динамика</h1>
+<p><strong>Полный экран — последний звонок:</strong> <span id="fullscreen-result">Нет данных.</span></p>
+<p><strong>Проверка выбора динамика через Web Audio:</strong> <span id="web-output-support">Проверка не загружена. Обновите страницу.</span></p>
+<p>Это проверка браузерного API, через который Chrome может выбирать аудиовыход. Использование внутреннего драйвера AAudio браузер странице не сообщает.</p>
+<p>Завершите звонок перед проверкой. Два теста играют один и тот же короткий звук с одинаковым уровнем. Начните с телефона на расстоянии от уха.</p>
+<button id="web-audio">Проверить звук как в звонке</button>
+<button id="media-audio">Проверить обычное воспроизведение</button>
+<p id="status" role="status" aria-live="polite">Нажмите кнопку и сравните громкость и динамик.</p>
+<label for="output">Выходы, доступные браузеру</label>
+<select id="output"><option value="">Системный выход</option></select>
+<button id="refresh">Обновить список выходов</button>
+<button id="choose">Открыть выбор выхода браузера</button>
+<p>Если разговорного динамика нет в списке, страница не может выбрать его этим способом.</p>
+<button id="capture">Сравнить звук в режиме звонка</button>
+<button id="media-capture">Проверить обычное воспроизведение в режиме звонка</button>
+<p>Этот тест временно включает микрофон, чтобы проверить, меняет ли режим звонка громкость или динамик. Звук с микрофона не записывается и не передаётся. После теста микрофон выключится.</p>
+<button id="stop">Остановить звук и выключить тест</button>
+<h2>Результаты проверки</h2>
+<pre id="report"></pre>
+<script type="module" src="./audio-check.js?v=7"></script>
+</html>

@@ -42,10 +42,13 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
             rain.setAttribute('aria-hidden', 'true');
             notes.parentElement.append(rain);
         }
+        const rainBounds = rain.getBoundingClientRect();
+        const columnStep = 12;
+        const characters = [];
+        const headsPerColumn = new Map();
         const fallingLetters = document.createElement('div');
         fallingLetters.className = 'matrix-rain-heads';
         let count = 0;
-        const updatedColumns = new Set();
         for (const paragraph of paragraphs) {
             const node = paragraph.firstChild;
             if (!node) continue;
@@ -57,46 +60,53 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
                 offset = end;
                 if (!/[\p{L}\p{N}]/u.test(character)) continue;
                 const rect = range.getBoundingClientRect();
-                if (rect.bottom < bounds.top || rect.top > bounds.bottom || count >= 400) continue;
-                const columnKey = Math.round((rect.left - bounds.left) / Math.max(rect.width, 1));
-                const trailLength = Math.ceil(bounds.height / Math.max(rect.height, 12)) + 2;
-                if (!columns.has(columnKey)) {
-                    const column = document.createElement('span');
-                    column.className = 'matrix-rain-column';
-                    column.textContent = Array(trailLength + 2).fill(character).join('\n');
-                    column.style.left = `${rect.left - bounds.left}px`;
-                    column.style.top = '0px';
-                    column.style.setProperty('--column-delay', `${-randomBetween(0, 8)}s`);
-                    column.style.setProperty('--column-flow-duration', `${randomBetween(2.8, 5.5)}s`);
-                    column.style.setProperty('--column-shimmer-duration', `${randomBetween(3.5, 7)}s`);
-                    column.style.setProperty('--column-appear-duration', `${randomBetween(5, 9)}s`);
-                    const hue = randomBetween(120, 150);
-                    column.style.setProperty('--column-dark', `hsl(${hue} 40% 24%)`);
-                    column.style.setProperty('--column-green', `hsl(${hue} 40% 43%)`);
-                    column.style.setProperty('--column-light', `hsl(${hue} 65% 82%)`);
-                    rain.append(column);
-                    columns.set(columnKey, column);
-                } else if (!updatedColumns.has(columnKey)) {
-                    columns.get(columnKey).textContent = Array(trailLength + 2).fill(character).join('\n');
-                }
-                updatedColumns.add(columnKey);
+                if (rect.bottom < bounds.top || rect.top > bounds.bottom || count >= 96) continue;
+                characters.push(character);
+                const headColumn = Math.floor((rect.left - rainBounds.left) / columnStep);
+                const heads = headsPerColumn.get(headColumn) ?? 0;
+                if (heads >= 2) continue;
+                headsPerColumn.set(headColumn, heads + 1);
+                const trailLength = Math.ceil(rainBounds.height / Math.max(rect.height, 12)) + 2;
                 const letter = document.createElement('span');
                 letter.className = 'matrix-rain-letter';
                 letter.textContent = character;
                 letter.setAttribute('data-character', character);
                 letter.setAttribute('data-trail', Array(trailLength).fill(character).join('\n'));
-                letter.style.left = `${rect.left - bounds.left}px`;
-                letter.style.top = `${rect.top - bounds.top}px`;
-                letter.style.setProperty('--rain-distance', `${bounds.height * 2 + 80}px`);
+                letter.style.left = `${rect.left - rainBounds.left}px`;
+                letter.style.top = `${rect.top - rainBounds.top}px`;
+                letter.style.setProperty('--rain-distance', `${rainBounds.height * 2 + 80}px`);
                 letter.style.setProperty('--rain-duration', `${randomBetween(24, 36)}s`);
                 letter.style.setProperty('--rain-delay', `${randomBetween(0, 1.5)}s`);
                 letter.style.setProperty('--rain-shimmer-duration', `${randomBetween(1.3, 3)}s`);
                 letter.style.setProperty('--trail-shimmer-duration', `${randomBetween(2, 4.5)}s`);
+                letter.style.setProperty('--shimmer-delay', `${-randomBetween(0, 5)}s`);
                 fallingLetters.append(letter);
                 count++;
             }
         }
         if (!count) {cancel(); return;}
+        // Keep persistent rain across the whole viewport, including the call's side padding.
+        const columnCount = Math.ceil(rainBounds.width / columnStep);
+        const trailLength = Math.ceil(rainBounds.height / 12) + 4;
+        for (const [key, column] of columns) {
+            if (key >= columnCount) {column.remove(); columns.delete(key);}
+        }
+        for (let key = 0; key < columnCount; key++) {
+            const character = characters[key % characters.length];
+            let column = columns.get(key);
+            if (!column) {
+                column = document.createElement('span');
+                column.className = 'matrix-rain-column';
+                column.style.top = '0px';
+                column.style.setProperty('--column-appear-duration', `${randomBetween(5, 9)}s`);
+                column.style.setProperty('--column-shimmer-duration', `${randomBetween(3.5, 7)}s`);
+                column.style.setProperty('--column-shimmer-delay', `${-randomBetween(0, 8)}s`);
+                rain.append(column);
+                columns.set(key, column);
+            }
+            column.style.left = `${key * columnStep}px`;
+            column.textContent = Array(trailLength).fill(character).join('\n');
+        }
         rain.append(fallingLetters);
         background.style.opacity = '0';
         notes.parentElement.classList.remove('matrix-reading');

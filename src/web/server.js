@@ -100,6 +100,7 @@ export function createAcpPhoneApp({contacts, speech, environment = {}, baseDirec
 
     app.get('/acp-phone.js', (_request, response) => response.sendFile(resolve(directory, 'client.js')));
     app.get('/skins.js', (_request, response) => response.sendFile(resolve(directory, 'skins.js')));
+    app.get('/browser-id.js', (_request, response) => response.sendFile(resolve(directory, 'browser-id.js')));
     app.get('/call', (_request, response) => response.sendFile(resolve(directory, 'public/index.html')));
     app.use(express.static(resolve(directory, 'public'), {index: false}));
     app.get('/api/health', (_request, response) => {

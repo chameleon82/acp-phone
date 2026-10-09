@@ -1,6 +1,7 @@
-import {createAcpPhone, ACP_PHONE_SKINS} from '/acp-phone.js';
+import {createAcpPhone, ACP_PHONE_SKINS} from '/acp-phone.js?v=fullscreen-after-audio-3';
 
-const phone = createAcpPhone();
+const phone = createAcpPhone({fullscreen: true,
+    keepAwake: new URLSearchParams(window.location.search).get('keepAwake') !== 'false'});
 const list = document.querySelector('#agent-list');
 const status = document.querySelector('#contacts-status');
 const skinSelect = document.querySelector('#skin');

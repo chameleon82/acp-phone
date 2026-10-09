@@ -19,6 +19,7 @@ body {
 button, select { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 
+
 .call-screen {
     position: relative;
     isolation: isolate;
@@ -214,6 +215,8 @@ html.call-page { height: 100dvh; overflow: hidden; }
     width: 100%; height: 100%; min-height: 0; border-radius: 0;
     padding-top: max(.75rem, env(safe-area-inset-top));
     padding-bottom: max(.75rem, env(safe-area-inset-bottom));
+    padding-left: max(1.25rem, env(safe-area-inset-left));
+    padding-right: max(1.25rem, env(safe-area-inset-right));
 }
 .call-page .call-view { min-height: 0; }
 .call-page .call-header, .call-page .call-controls { flex-shrink: 0; }
@@ -349,15 +352,13 @@ html.call-page { height: 100dvh; overflow: hidden; }
     text-shadow: 0 0 8px #2c7c3f20;
 }
 .matrix-background-text p { margin: 0 0 1.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.matrix-rain { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.matrix-rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
 .matrix-rain-heads { position: absolute; inset: 0; }
-.matrix-reading .matrix-rain { opacity: .4; }
 .matrix-rain-column {
     position: absolute;
     z-index: 0;
     color: transparent;
-    background-image: linear-gradient(to bottom, var(--column-dark) 0%, var(--column-green) 30%,
-        var(--column-light) 46%, #85da9a 53%, var(--column-green) 70%, var(--column-dark) 100%);
+    background-image: linear-gradient(to bottom, #31583b 0%, #579c69 30%, #a0cba9 46%, #85da9a 53%, #579c69 70%, #31583b 100%);
     background-size: 100% 240px;
     background-repeat: repeat-y;
     background-clip: text;
@@ -366,17 +367,12 @@ html.call-page { height: 100dvh; overflow: hidden; }
     line-height: 1.1;
     white-space: pre;
     opacity: .5;
-    animation: matrix-column-flow var(--column-flow-duration) linear var(--column-delay) infinite,
-        matrix-column-shimmer var(--column-shimmer-duration) linear var(--column-delay) infinite,
+    animation: matrix-column-shimmer var(--column-shimmer-duration) linear var(--column-shimmer-delay) infinite,
         matrix-column-appear var(--column-appear-duration) ease-out both;
 }
 @keyframes matrix-column-shimmer {
     from { background-position: 0 0; }
     to { background-position: 0 240px; }
-}
-@keyframes matrix-column-flow {
-    from { transform: translateY(-1.1em); }
-    to { transform: translateY(0); }
 }
 @keyframes matrix-column-appear {
     from { opacity: 0; }
@@ -385,12 +381,12 @@ html.call-page { height: 100dvh; overflow: hidden; }
 .matrix-rain-letter {
     position: absolute;
     z-index: 1;
-    color: #8bca9a;
+    color: #6d9c79;
     font-size: .92rem;
     line-height: 1;
     white-space: pre;
     animation: matrix-letter-fall var(--rain-duration) linear var(--rain-delay) both,
-        matrix-green-shimmer var(--rain-shimmer-duration) ease-in-out var(--rain-delay) infinite;
+        matrix-green-shimmer var(--rain-shimmer-duration) ease-in-out var(--shimmer-delay) infinite;
 }
 .matrix-rain-letter::before {
     content: attr(data-trail);
@@ -402,7 +398,7 @@ html.call-page { height: 100dvh; overflow: hidden; }
     white-space: pre;
     mask-image: linear-gradient(to top, #000, #0009 35%, #0004 70%, transparent);
     animation: matrix-trail-show var(--rain-duration) linear var(--rain-delay) both,
-        matrix-trail-shimmer var(--trail-shimmer-duration) ease-in-out var(--rain-delay) infinite;
+        matrix-trail-shimmer var(--trail-shimmer-duration) ease-in-out var(--shimmer-delay) infinite;
 }
 @keyframes matrix-green-shimmer {
     0%, 100% { color: #75b98a; }
@@ -410,15 +406,9 @@ html.call-page { height: 100dvh; overflow: hidden; }
     70% { color: #59bf8e; }
 }
 @keyframes matrix-trail-shimmer {
-    0%, 100% {
-        color: #579d6bcc;
-    }
-    35% {
-        color: #91c880cc;
-    }
-    70% {
-        color: #50b486cc;
-    }
+    0%, 100% { color: #579d6bcc; }
+    35% { color: #91c880cc; }
+    70% { color: #50b486cc; }
 }
 @keyframes matrix-trail-show {
     0% { opacity: 0; }

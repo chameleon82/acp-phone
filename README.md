@@ -30,6 +30,8 @@ Dialing lasts at least two seconds, even when connection setup succeeds immediat
 
 Pressing End releases the microphone and cancels the agent immediately, plays a short local descending tone when the speaker is enabled, and keeps the ended call visible for two seconds before returning to contacts. Page cleanup and connection failures skip this confirmation.
 
+During dialing and active calls, ACP Phone requests a screen wake lock to keep the display awake, including while reconnecting. End and connection failures release it immediately. Returning to a visible tab reacquires the lock for an ongoing call. This requires a supporting browser and a secure context; system power-saving settings can refuse it. The embedded frame allows `screen-wake-lock`; cross-origin deployments must also allow the phone origin in the host's Permissions Policy. A refused lock never prevents calling.
+
 Recordings with an empty transcript, punctuation only, or an explicit noise/silence annotation are skipped before ACP is opened. The stream ends with `turn.skipped`, and the browser quietly resumes listening without generating an agent reply.
 
 Microphone activation keeps the current agent reply playing. During an interruption, the browser transcribes an initial 800 ms preview and, if needed, a second 1.2 second preview through the configured gateway. Recognized words cancel the previous reply while recording continues; empty/noise previews keep it playing. Only the completed caller message starts the next ACP turn. Interruption timing depends on gateway transcription latency; unsupported microphone preview capture falls back to final transcription.
@@ -71,6 +73,10 @@ npm start
 ```
 
 Then open `http://localhost:3000` on the machine running the server. For a physical phone, expose the development server through trusted HTTPS (for example, a secure tunnel); microphone access is restricted to secure contexts except localhost.
+
+The example launcher also serves HTTPS on `0.0.0.0:3443` when `.acp-phone/tls/cert.pem` and `.acp-phone/tls/key.pem` exist beside the configuration file. HTTP on port 3000 stays available. Override these paths with `ACP_PHONE_TLS_CERT` and `ACP_PHONE_TLS_KEY`, and the HTTPS port with `ACP_PHONE_HTTPS_PORT` (in the environment or configuration `environment` map). Certificates and keys under `.acp-phone/` are ignored by Git and excluded from the npm package.
+
+For local development with mkcert, generate a certificate containing the computer's LAN IP, then open `https://<LAN-IP>:3443` on the phone. The phone must trust the issuing CA certificate; copy only the public `rootCA.pem` from `mkcert -CAROOT`, never its private key. Regenerate the server certificate if the LAN IP changes.
 
 Run checks and unit tests:
 
@@ -181,6 +187,10 @@ callIcon.addEventListener('click', () => {
 ```
 
 `openCall(contactId)` synchronously opens a modal containing the built-in call screen and starts connecting to that contact without showing a contact list. It returns `{close()}` to end the call from the host app. Only one call can be open per client instance. Hangup retains the existing completion sound and then closes the modal. Conversation IDs stay separate for each contact and survive later calls.
+
+On mobile and touch devices, the call fills the viewport with safe-area spacing for screen cutouts. By default, `fullscreen: 'auto'` requests browser fullscreen after the call frame has loaded and microphone setup has completed, so those steps do not immediately reset fullscreen. Call `openCall` directly from a click handler; the browser must still retain that click's transient activation when audio becomes ready. A slow connection or a permission prompt can exhaust activation, in which case the call remains open at full viewport size. Set `fullscreen: false` to disable the request, or `true` to request it on desktop too. This option is available on both `createAcpPhone` and `openCall`. Hangup exits fullscreen owned by the call and restores host scrolling. Set `keepAwake: false` on `createAcpPhone` to disable the screen wake lock. The example contact page requests fullscreen on every device.
+
+Open `audio-check.html` under the same phone mount path to compare Web Audio and ordinary playback, inspect browser-provided audio outputs, and read the last call's fullscreen result. The optional call-mode tests temporarily acquire the microphone without recording or uploading audio; leaving the page or stopping the test releases it. Browser output selection does not guarantee access to the phone's earpiece, and the page cannot identify Chrome's internal audio driver.
 
 Choose the call appearance with `skin`: `default` retains the original ACP Phone design, `telegram` uses a blue call screen, `whatsapp` uses a green call screen, and `matrix` shows subdued green monospaced call notes behind the call controls. Default notes appear in their panel; Telegram and WhatsApp hide them. Matrix notes follow the latest text automatically. These are independent designs inspired by those apps and the Matrix aesthetic. All skins use the same call lifecycle and audio behavior.
 

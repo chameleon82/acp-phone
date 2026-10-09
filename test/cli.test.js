@@ -6,9 +6,57 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFile, spawn} from 'node:child_process';
 import {promisify} from 'node:util';
+import {get as httpsGet} from 'node:https';
 
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../bin/acp-phone.js', import.meta.url));
+
+test('CLI serves trusted HTTPS alongside HTTP and shuts down both listeners', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'acp-phone-https-'));
+    let child;
+    try {
+        await run('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+            '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+            '-keyout', 'key.pem', '-out', 'cert.pem'], {cwd});
+        await writeFile(join(cwd, 'acp-phone.config.json'), JSON.stringify({targets: [{id: 'test', label: 'Test', command: 'unused'}]}));
+        child = spawn(process.execPath, [cli], {cwd, env: {...process.env,
+            ACP_PHONE_CONFIG: 'acp-phone.config.json', ACP_PHONE_PORT: '0', ACP_PHONE_HTTPS_PORT: '0',
+            ACP_PHONE_TLS_CERT: 'cert.pem', ACP_PHONE_TLS_KEY: 'key.pem',
+            OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1'}, stdio: ['ignore', 'pipe', 'pipe']});
+        const exited = new Promise(resolve => child.once('exit', resolve));
+        let output = '';
+        let errors = '';
+        const urls = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`HTTPS startup timed out: ${errors}`)), 30000);
+            child.stderr.on('data', chunk => {errors += chunk;});
+            child.stdout.on('data', chunk => {
+                output += chunk;
+                const http = output.match(/listening at (http:\/\/localhost:\d+)/);
+                const https = output.match(/listening at (https:\/\/localhost:\d+)/);
+                if (http && https) {clearTimeout(timer); resolve([http[1], https[1]]);}
+            });
+            child.once('exit', () => {clearTimeout(timer); reject(new Error(errors));});
+            child.once('error', error => {clearTimeout(timer); reject(error);});
+        });
+        assert.equal((await fetch(`${urls[0]}/api/contacts`)).status, 200);
+        const ca = await readFile(join(cwd, 'cert.pem'));
+        const contacts = await new Promise((resolve, reject) => {
+            httpsGet(`${urls[1]}/api/contacts`, {ca, family: 4}, response => {
+                assert.equal(response.statusCode, 200);
+                let body = '';
+                response.on('data', chunk => {body += chunk;});
+                response.on('end', () => {try {resolve(JSON.parse(body));} catch (error) {reject(error);}});
+                response.on('error', reject);
+            }).on('error', reject);
+        });
+        assert.deepEqual(contacts, {contacts: [{id: 'test', label: 'Test'}]});
+        child.kill('SIGTERM');
+        assert.equal(await exited, 0);
+    } finally {
+        child?.kill('SIGTERM');
+        await rm(cwd, {recursive: true, force: true});
+    }
+});
 
 test('CLI initializes a standalone workspace and preserves existing settings', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'acp-phone-cli-'));

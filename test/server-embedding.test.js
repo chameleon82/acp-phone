@@ -28,13 +28,13 @@ test('host mounts the complete phone API and call assets without config files or
         const body = await contactsResponse.text();
         assert.deepEqual(JSON.parse(body), {contacts: [{id: 'codex', label: 'Codex'}, {id: 'claude', label: 'Claude'}]});
         assert.doesNotMatch(body, /private-key|unused-|environment|command/);
-        for (const path of ['call?contact=claude', 'acp-phone.js', 'skins.js', 'app.js', 'matrix-notes.js', 'style.css', 'pcm-capture.js', 'api/health']) {
+        for (const path of ['call?contact=claude', 'acp-phone.js', 'skins.js', 'browser-id.js', 'app.js', 'matrix-notes.js', 'screen-wake-lock.js', 'audio-check.html', 'audio-check.js', 'style.css', 'pcm-capture.js', 'api/health']) {
             const response = await fetch(`${origin}/phone/${path}`);
             assert.equal(response.status, 200, path);
             if (path.startsWith('call')) {
                 const html = await response.text();
-                assert.match(html, /src="\.\/app.js"/);
-                assert.match(html, /href="\.\/style.css"/);
+                assert.match(html, /src="\.\/app.js(?:\?[^\"]*)?"/);
+                assert.match(html, /href="\.\/style.css(?:\?[^\"]*)?"/);
             }
         }
         assert.equal((await fetch(`${origin}/phone/contacts.js`)).status, 404);

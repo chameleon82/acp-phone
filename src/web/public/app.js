@@ -1,6 +1,8 @@
 // Requests and assets follow the mount path of the built-in call screen.
 import {isSkin} from './skins.js';
-import {animateMatrixNotes} from './matrix-notes.js';
+import {animateMatrixNotes} from './matrix-notes.js?v=letter-shimmer-3';
+import {createScreenWakeLock} from './screen-wake-lock.js';
+import {createBrowserId} from './browser-id.js';
 function phonePath(path) {
     const prefix = (window.location?.pathname ?? '/').replace(/\/+$/, '').replace(/\/[^/]*$/, '');
     return `${prefix}${path}`;
@@ -30,6 +32,7 @@ const transcript = document.querySelector('#transcript');
 const transcriptStatus = document.querySelector('#transcript-status');
 const agentText = document.querySelector('#agent-text');
 const launchParameters = new URLSearchParams(window.location?.search ?? '');
+const keepScreenAwake = launchParameters.get('keepAwake') !== 'false';
 const requestedSkin = launchParameters.get('skin') ?? 'default';
 document.documentElement.dataset.skin = isSkin(requestedSkin) ? requestedSkin : 'default';
 let matrixNotes;
@@ -120,6 +123,36 @@ let thinkingTimer;
 let thinkingRequest;
 let thinkingAudio;
 let previousThinkingPhrase = '';
+const screenWakeLock = createScreenWakeLock({navigator, document});
+let ownsFullscreen = false;
+
+function recordCallFullscreen(result, error) {
+    const events = [{result, error: error ? `${error.name}: ${error.message}` : undefined,
+        source: 'call-page', active: Boolean(document.fullscreenElement), enabled: document.fullscreenEnabled,
+        userActivation: navigator.userActivation?.isActive}];
+    try {localStorage.setItem('acp-phone.fullscreen-diagnostic', JSON.stringify(events));} catch {}
+}
+
+function exitCallFullscreen() {
+    if (ownsFullscreen && document.fullscreenElement === document.documentElement) {
+        try {Promise.resolve(document.exitFullscreen?.()).catch(() => {});} catch {}
+    }
+    ownsFullscreen = false;
+}
+
+function requestCallFullscreen(generation) {
+    if (hostChannel) return; // The host requests fullscreen within the contact click.
+    if (document.fullscreenElement) {recordCallFullscreen('entered-fullscreen'); return;}
+    if (!document.documentElement.requestFullscreen) {recordCallFullscreen('API-unavailable'); return;}
+    recordCallFullscreen('requesting');
+    try {
+        ownsFullscreen = true;
+        Promise.resolve(document.documentElement.requestFullscreen({navigationUI: 'hide'})).then(() => {
+            recordCallFullscreen('request-resolved');
+            if (generation !== callGeneration) exitCallFullscreen();
+        }).catch(error => {ownsFullscreen = false; recordCallFullscreen('request-rejected', error);});
+    } catch (error) {ownsFullscreen = false; recordCallFullscreen('request-threw', error);}
+}
 
 callButton.addEventListener('click', () => state === 'ready' && !hostChannel ? startCall() : endCall({animate: true}));
 window.addEventListener('message', event => {
@@ -208,13 +241,14 @@ async function startCall() {
     startRinging(generation);
     const savedCall = conversations[targetSelect.value];
     callId = typeof savedCall === "string" && savedCall.length > 0 && savedCall.length <= 128
-        ? savedCall : crypto.randomUUID();
+        ? savedCall : createBrowserId(crypto);
     conversations[targetSelect.value] = callId;
     saveConversations();
     try { localStorage.setItem(TARGET_STORAGE_KEY, targetSelect.value); } catch {}
     transcript.textContent = '—';
     agentText.textContent = '—';
     setState('connecting', 'Connecting…', 'Restoring your conversation and opening the microphone.');
+    if (keepScreenAwake) void screenWakeLock.start();
     callStartedAt = Date.now();
     startTimer();
     screen.classList.add('in-call');
@@ -300,6 +334,8 @@ async function playGreeting(generation) {
 }
 
 function endCall({release = true, animate = false} = {}) {
+    exitCallFullscreen();
+    void screenWakeLock.stop();
     clearTimeout(pickupTimer);
     pickupTimer = undefined;
     finishPickupWait?.();
@@ -483,6 +519,9 @@ async function openMicrophone(generation) {
     microphone = stream;
     await resumed;
     if (generation !== callGeneration) return;
+    if (hostChannel && hostOrigin && window.parent !== window) {
+        window.parent?.postMessage({type: 'acp-phone.audio-ready', channel: hostChannel}, hostOrigin);
+    } else requestCallFullscreen(generation);
 
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 1024;

@@ -3,6 +3,8 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
 import {isSkin} from '../src/web/skins.js';
+import {createScreenWakeLock} from '../src/web/public/screen-wake-lock.js';
+import {createBrowserId} from '../src/web/browser-id.js';
 
 const source = (await readFile(new URL('../src/web/public/app.js', import.meta.url), 'utf8'))
     .replace(/^import .*;\n/gm, '')
@@ -21,6 +23,8 @@ function browser(overrides = {}) {
     });
     const context = vm.createContext({
         isSkin,
+        createScreenWakeLock,
+        createBrowserId,
         document: {documentElement: {dataset: {}}, createElement: element, querySelector: (selector) => {
             if (!elements.has(selector)) elements.set(selector, element());
             return elements.get(selector);
@@ -60,6 +64,31 @@ function browser(overrides = {}) {
         },
     };
 }
+
+test('fullscreen is not requested before microphone permission has completed', async () => {
+    let requested = false;
+    const page = browser({fetch: async () => {
+        assert.equal(requested, false);
+        return {ok: true};
+    }});
+    page.context.document.documentElement.requestFullscreen = () => {
+        requested = true;
+        return Promise.reject(new Error('Denied'));
+    };
+    await page.run('startCall()');
+    assert.equal(requested, false);
+    assert.equal(page.run('state'), 'ready');
+});
+
+test('keepAwake=false excludes the wake lock request without preventing a call attempt', async () => {
+    let wakeRequests = 0;
+    const page = browser({window: {location: {search: '?keepAwake=false'}, addEventListener() {}, MediaRecorder: class {}}});
+    page.context.wakeRequest = () => {wakeRequests++;};
+    page.run('screenWakeLock.start = wakeRequest;');
+    await page.run('startCall()');
+    assert.equal(wakeRequests, 0);
+    assert.match(page.elements.get('#status').textContent, /Permission denied/);
+});
 
 test('microphone denial resets controls and permits another call', async () => {
     const page = browser();
@@ -312,6 +341,14 @@ test('redial and browser restart reuse the stored conversation for the selected 
     restarted.elements.get('#target').value = 'agent-b';
     await restarted.run('startCall()');
     assert.equal(generated, 2);
+});
+
+test('LAN HTTP creates a call ID without randomUUID and reaches microphone setup', async () => {
+    const page = browser({crypto: {getRandomValues(bytes) {bytes.fill(7); return bytes;}}});
+    page.elements.get('#target').value = 'agent-a';
+    await page.run('startCall()');
+    assert.match(page.run("conversations['agent-a']"), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.match(page.elements.get('#status').textContent, /Permission denied/);
 });
 
 test('pagehide cleanup preserves the server session', () => {

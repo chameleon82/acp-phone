@@ -5,6 +5,7 @@ import {animateMatrixNotes} from '../src/web/public/matrix-notes.js';
 test('Matrix retains its rain through new text and interruption, then adds the next spoken reply', () => {
     function element() {
         return {
+            getBoundingClientRect: () => ({left: 0, top: 0, width: 360, height: 300}),
             children: [], style: {setProperty() {}}, classList: {add() {}, remove() {}},
             set textContent(value) {this.text = value; this.firstChild = {textContent: value};},
             get textContent() {return this.text ?? '';},
@@ -40,6 +41,9 @@ test('Matrix retains its rain through new text and interruption, then adds the n
         const rain = host.children.find(child => child.className === 'matrix-rain');
         const column = rain.children.find(child => child.className === 'matrix-rain-column');
         assert.ok(column);
+        const rainColumns = rain.children.filter(child => child.className === 'matrix-rain-column');
+        assert.equal(rainColumns[0].style.left, '0px');
+        assert.equal(rainColumns.at(-1).style.left, '348px');
         const originalHeads = rain.children.find(child => child.className === 'matrix-rain-heads');
         sources[1].textContent = 'Second answer';
         update();
