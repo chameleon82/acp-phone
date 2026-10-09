@@ -149,7 +149,11 @@ function startAcpProcess({target, command}) {
     try {
         child = spawn(command, target.args ?? [], {
             cwd: target.cwd ?? process.cwd(),
-            env: process.env,
+            // The voice server's OpenAI-compatible STT/TTS credentials must not
+            // override a locally authenticated ACP agent such as Codex. Codex
+            // otherwise prefers these inherited variables over its own ChatGPT
+            // login and can send the voice gateway token to its model provider.
+            env: acpProcessEnvironment(process.env, target),
             stdio: ['pipe', 'pipe', 'pipe'],
         });
     } catch (cause) {
@@ -161,6 +165,32 @@ function startAcpProcess({target, command}) {
     child.stderr.resume();
     child.once('error', (cause) => child.emit('acp-process-error', cause));
     return child;
+}
+
+function acpProcessEnvironment(environment, target) {
+    const childEnvironment = {...environment};
+    // Do not pass this application's speech-provider configuration into a
+    // local agent process. Keep all other ambient environment variables, which
+    // lets an ACP adapter retain normal PATH, HOME, and platform settings.
+    delete childEnvironment.OPENAI_API_KEY;
+    delete childEnvironment.OPENAI_BASE_URL;
+    delete childEnvironment.OPENAI_ORG_ID;
+    delete childEnvironment.OPENAI_PROJECT_ID;
+
+    if (target.environment !== undefined) {
+        if (!isEnvironmentMap(target.environment)) {
+            throw new VoiceCallError(`ACP target "${target.id}" has invalid environment variables.`, {
+                code: 'ACP_ENVIRONMENT_INVALID', status: 500,
+            });
+        }
+        Object.assign(childEnvironment, target.environment);
+    }
+    return childEnvironment;
+}
+
+function isEnvironmentMap(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        && Object.values(value).every((entry) => typeof entry === 'string');
 }
 
 function agentMessageText(update) {
