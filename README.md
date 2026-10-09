@@ -182,6 +182,17 @@ callIcon.addEventListener('click', () => {
 
 `openCall(contactId)` synchronously opens a modal containing the built-in call screen and starts connecting to that contact without showing a contact list. It returns `{close()}` to end the call from the host app. Only one call can be open per client instance. Hangup retains the existing completion sound and then closes the modal. Conversation IDs stay separate for each contact and survive later calls.
 
+Choose the call appearance with `skin`: `default` retains the original ACP Phone design, `telegram` uses a blue call screen, `whatsapp` uses a green call screen, and `matrix` shows subdued green monospaced call notes behind the call controls. Default notes appear in their panel; Telegram and WhatsApp hide them. Matrix notes follow the latest text automatically. These are independent designs inspired by those apps and the Matrix aesthetic. All skins use the same call lifecycle and audio behavior.
+
+```js
+const phone = createAcpPhone({baseUrl: '/phone/', skin: 'telegram'});
+callIcon.onclick = () => phone.openCall('claude');
+// Override the default for a particular call:
+otherCallIcon.onclick = () => phone.openCall('codex', {skin: 'whatsapp'});
+```
+
+`ACP_PHONE_SKINS`, exported from `acp-phone/browser`, lists available `{id, label}` values. Unknown API skin names are rejected. Direct call links also accept `?contact=CONTACT_ID&skin=telegram`; unknown URL skin names fall back to `default`. The example's appearance selector saves the chosen skin locally for future calls. In Matrix, text remains still during speech and falls into a continuous green rain after the final response audio finishes. Existing rain persists during new text and interruptions; new replies appear above it and join its columns after playback. Reduced-motion preferences keep text still.
+
 For an unbundled browser app, import `createAcpPhone` from `/phone/acp-phone.js` when mounted at `/phone`. A separate ACP Phone server also works by passing its URL as `baseUrl`. Calling the contacts API from another origin requires the host deployment to configure CORS; embedded microphone access requires HTTPS (or localhost) and a Permissions Policy allowing the phone origin. No new authentication scheme is provided by this browser client. Hosts can mount their existing authentication middleware before `phone.app`.
 
 The call screen is available directly at `/phone/call?contact=CONTACT_ID` when mounted at `/phone`. Unknown contacts show an error and do not open an agent session.

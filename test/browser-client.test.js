@@ -2,16 +2,18 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
+import {ACP_PHONE_SKINS, isSkin} from '../src/web/skins.js';
 
-const source = (await readFile(new URL('../src/web/client.js', import.meta.url), 'utf8')).replace('export function', 'function');
+const source = (await readFile(new URL('../src/web/client.js', import.meta.url), 'utf8'))
+    .replace(/^import .*;\n/gm, '').replace(/^export \{.*\};\n/gm, '').replace('export function', 'function');
 
-function host(baseUrl = 'https://phone.example') {
+function host(baseUrl = 'https://phone.example', skin = 'default') {
     const listeners = new Map();
     const nodes = [];
     const timers = new Map();
     const requests = [];
     const context = vm.createContext({
-        URL, crypto: {randomUUID: () => 'channel'},
+        URL, ACP_PHONE_SKINS, isSkin, crypto: {randomUUID: () => 'channel'},
         setTimeout: callback => {timers.set(1, callback); return 1;},
         clearTimeout: id => timers.delete(id),
         window: {
@@ -38,7 +40,8 @@ function host(baseUrl = 'https://phone.example') {
     });
     vm.runInContext(source, context);
     context.phoneBaseUrl = baseUrl;
-    const phone = vm.runInContext('createAcpPhone({baseUrl: phoneBaseUrl})', context);
+    context.phoneSkin = skin;
+    const phone = vm.runInContext('createAcpPhone({baseUrl: phoneBaseUrl, skin: phoneSkin})', context);
     return {phone, nodes, listeners, requests, timers};
 }
 
@@ -96,4 +99,17 @@ test('browser API preserves the host mount path for contacts and calls', async (
     assert.equal(page.requests[0].url, 'https://host.example/phone/api/contacts');
     page.phone.openCall('claude');
     assert.equal(new URL(page.nodes[1].src).pathname, '/phone/call');
+});
+
+test('a default skin can be overridden per call and unknown skins never open a frame', () => {
+    const page = host('https://phone.example', 'telegram');
+    const call = page.phone.openCall('a');
+    assert.equal(new URL(page.nodes[1].src).searchParams.get('skin'), 'telegram');
+    page.listeners.get('message')({origin: 'https://phone.example', source: page.nodes[1].contentWindow,
+        data: {type: 'acp-phone.ended', channel: 'channel'}});
+    page.phone.openCall('b', {skin: 'whatsapp'});
+    assert.equal(new URL(page.nodes[3].src).searchParams.get('skin'), 'whatsapp');
+    call.close();
+    assert.throws(() => page.phone.openCall('b', {skin: 'unknown'}), /Unknown ACP Phone skin/);
+    assert.throws(() => host('https://phone.example', 'unknown'), /Unknown ACP Phone skin/);
 });

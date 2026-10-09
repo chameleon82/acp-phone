@@ -1,4 +1,6 @@
 // Requests and assets follow the mount path of the built-in call screen.
+import {isSkin} from './skins.js';
+import {animateMatrixNotes} from './matrix-notes.js';
 function phonePath(path) {
     const prefix = (window.location?.pathname ?? '/').replace(/\/+$/, '').replace(/\/[^/]*$/, '');
     return `${prefix}${path}`;
@@ -28,6 +30,23 @@ const transcript = document.querySelector('#transcript');
 const transcriptStatus = document.querySelector('#transcript-status');
 const agentText = document.querySelector('#agent-text');
 const launchParameters = new URLSearchParams(window.location?.search ?? '');
+const requestedSkin = launchParameters.get('skin') ?? 'default';
+document.documentElement.dataset.skin = isSkin(requestedSkin) ? requestedSkin : 'default';
+let matrixNotes;
+let matrixReplyComplete = false;
+let matrixReplyAudio = false;
+if (requestedSkin === 'matrix' && window.MutationObserver) {
+    matrixNotes = animateMatrixNotes({document, MutationObserver: window.MutationObserver,
+        notes: document.querySelector('.conversation'), sources: [transcript, agentText],
+        reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false});
+    window.addEventListener('pagehide', () => matrixNotes.destroy());
+}
+
+function finishMatrixReading() {
+    if (!matrixReplyComplete || !matrixReplyAudio || playingQueue || audioQueue.length || !speakerEnabled) return;
+    matrixReplyComplete = false;
+    matrixNotes?.dissolve();
+}
 const directContactId = launchParameters.get('contact');
 const hostChannel = launchParameters.get('channel');
 const hostOrigin = launchParameters.get('hostOrigin');
@@ -201,7 +220,6 @@ async function startCall() {
     screen.classList.add('in-call');
     callButton.classList.add('in-call');
     callLabel.textContent = 'End';
-    callIcon.textContent = '☎';
     muteButton.disabled = false;
     speakerButton.disabled = false;
     muted = false;
@@ -326,7 +344,6 @@ function endCall({release = true, animate = false} = {}) {
     screen.classList.remove('in-call', 'recording', 'playing', 'thinking');
     callButton.classList.remove('in-call', 'recording');
     callLabel.textContent = 'Call';
-    callIcon.textContent = '☎';
     muteButton.disabled = true;
     speakerButton.disabled = true;
     callTimer.textContent = 'Call ended';
@@ -511,6 +528,9 @@ function monitorVoice() {
 
 function beginUtterance() {
     if (!recordingStream || muted || recorder) return;
+    if (requestedSkin === 'matrix' && !playingQueue && !awaitingAgent && !activeRequest) {
+        agentText.textContent = '—';
+    }
     stopRinging();
     greetingRequest?.abort();
     greetingRequest = undefined;
@@ -720,6 +740,8 @@ function handleStreamEvent(event) {
         stopThinkingNotice();
         agentText.textContent = event.agentText;
         void pcmPlayback?.flush().catch(() => cancelAgentReply());
+        matrixReplyComplete = true;
+        finishMatrixReading();
     }
     if (event.type === 'agent.text.delta') {
         if (event.delta?.trim()) {
@@ -730,6 +752,7 @@ function handleStreamEvent(event) {
         agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
     }
     if (event.type === 'tts.audio') {
+        matrixReplyAudio = true;
         stopRinging();
         stopThinkingNotice();
         enqueueAudio(event);
@@ -872,6 +895,7 @@ async function updateLivePreview(preview) {
         if ((playingQueue || activeRequest || thinkingAudio || thinkingRequest)
             && replyGeneration === playbackGeneration && hasRecognizedSpeech(text)) {
             cancelAgentReply({preserveCandidate: true});
+            if (requestedSkin === 'matrix') agentText.textContent = '—';
             if (recorder) setState('recording', 'Listening', 'I heard you. Continue speaking; your turn sends after a pause.');
         }
         preview.text = mergePreviewText(preview.text, text);
@@ -966,6 +990,7 @@ async function enqueuePcmAudio(event) {
             pcmPlayback = undefined;
             currentAudio = undefined;
             playingQueue = false;
+            finishMatrixReading();
             if (state === 'playing') setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
         });
     }
@@ -1075,6 +1100,7 @@ async function playAudioQueue() {
     } catch (error) {
         if (generation === playbackGeneration) {
             audioQueue = [];
+            matrixReplyAudio = false;
             setState('connected', error.message, 'The response is available in Call notes. Speak to continue.');
         }
     } finally {
@@ -1082,6 +1108,7 @@ async function playAudioQueue() {
             playingQueue = false;
             stopPlayback = undefined;
             failPlayback = undefined;
+            finishMatrixReading();
             if (state === 'playing') setState('connected', 'Connected · listening', 'Speak whenever you are ready.');
         }
     }
@@ -1123,6 +1150,9 @@ async function createVoicePlayback(event, context) {
 }
 
 function cancelAgentReply({preserveCandidate = false} = {}) {
+    matrixReplyComplete = false;
+    matrixReplyAudio = false;
+    matrixNotes?.cancel();
     awaitingAgent = false;
     greetingRequest?.abort();
     greetingRequest = undefined;
@@ -1177,6 +1207,7 @@ function setState(nextState, statusMessage, prompt) {
     status.textContent = statusMessage;
     voicePrompt.textContent = prompt;
     const inCall = !['loading', 'ready', 'error'].includes(nextState);
+    callIcon.setAttribute('data-mode', hostChannel || inCall ? 'end' : 'call');
     contactsView.hidden = Boolean(directContactId) || inCall;
     callView.hidden = !directContactId && !inCall;
     contactsStatus.textContent = inCall ? '' : statusMessage;

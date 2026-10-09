@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
+import {isSkin} from '../src/web/skins.js';
 
 const source = (await readFile(new URL('../src/web/public/app.js', import.meta.url), 'utf8'))
+    .replace(/^import .*;\n/gm, '')
     .replace('await loadTargets();', '');
 
 function browser(overrides = {}) {
@@ -18,7 +20,8 @@ function browser(overrides = {}) {
         replaceChildren(...children) {this.children = children;},
     });
     const context = vm.createContext({
-        document: {createElement: element, querySelector: (selector) => {
+        isSkin,
+        document: {documentElement: {dataset: {}}, createElement: element, querySelector: (selector) => {
             if (!elements.has(selector)) elements.set(selector, element());
             return elements.get(selector);
         }},
@@ -423,6 +426,33 @@ test('call screen requests stay under the mount path including trailing slash UR
         assert.equal(page.run("phonePath('/api/contacts')"), '/phone/api/contacts');
         assert.equal(page.run("phonePath('/pcm-capture.js')"), '/phone/pcm-capture.js');
     }
+});
+
+test('call links select supported skins and fall back for unknown names', () => {
+    for (const [name, expected] of [['default', 'default'], ['telegram', 'telegram'], ['whatsapp', 'whatsapp'], ['matrix', 'matrix'], ['unknown', 'default']]) {
+        const page = browser({window: {location: {search: `?skin=${name}`}, addEventListener() {}, MediaRecorder: class {}}});
+        assert.equal(page.run('document.documentElement.dataset.skin'), expected);
+    }
+});
+
+test('Matrix waits for both the final reply and audio completion before dissolving text', () => {
+    const page = browser();
+    page.run("let dissolved = 0; matrixNotes = {dissolve() {dissolved++;}, cancel() {}}; matrixReplyAudio = true; playingQueue = true;");
+    page.run("handleStreamEvent({type: 'turn.completed', agentText: 'Final answer'});");
+    assert.equal(page.run('dissolved'), 0);
+    page.run('playingQueue = false; finishMatrixReading(); finishMatrixReading();');
+    assert.equal(page.run('dissolved'), 1);
+    page.run('matrixReplyAudio = true; matrixReplyComplete = false; finishMatrixReading();');
+    assert.equal(page.run('dissolved'), 1);
+});
+
+test('interruption and muted audio do not dissolve Matrix notes', () => {
+    const page = browser();
+    page.run("let dissolved = 0; let cancelled = 0; matrixNotes = {dissolve() {dissolved++;}, cancel() {cancelled++;}}; matrixReplyAudio = true; matrixReplyComplete = true; speakerEnabled = false; finishMatrixReading();");
+    assert.equal(page.run('dissolved'), 0);
+    page.run('speakerEnabled = true; cancelAgentReply(); finishMatrixReading();');
+    assert.equal(page.run('dissolved'), 0);
+    assert.equal(page.run('cancelled'), 1);
 });
 
 test('a network error automatically restores the same conversation before the next turn', async () => {

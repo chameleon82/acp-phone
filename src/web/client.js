@@ -1,5 +1,9 @@
 /** Browser API: provider credentials and agent configuration stay on the server. */
-export function createAcpPhone({baseUrl = window.location.origin} = {}) {
+import {ACP_PHONE_SKINS, isSkin} from './skins.js';
+export {ACP_PHONE_SKINS};
+
+export function createAcpPhone({baseUrl = window.location.origin, skin = 'default'} = {}) {
+    if (!isSkin(skin)) throw new TypeError(`Unknown ACP Phone skin: ${skin}`);
     const base = new URL(baseUrl, window.location.href);
     if (!base.pathname.endsWith('/')) base.pathname += '/';
     let activeCall;
@@ -10,12 +14,14 @@ export function createAcpPhone({baseUrl = window.location.origin} = {}) {
             const {contacts} = await response.json();
             return contacts;
         },
-        openCall(contactId, {onEnd} = {}) {
+        openCall(contactId, {onEnd, skin: callSkin = skin} = {}) {
+            if (!isSkin(callSkin)) throw new TypeError(`Unknown ACP Phone skin: ${callSkin}`);
             if (typeof contactId !== 'string' || !contactId.trim()) throw new TypeError('A contact ID is required.');
             if (activeCall) throw new Error('An ACP Phone call is already open.');
             const channel = crypto.randomUUID();
             const url = new URL('call', base);
             url.searchParams.set('contact', contactId);
+            url.searchParams.set('skin', callSkin);
             url.searchParams.set('channel', channel);
             url.searchParams.set('hostOrigin', window.location.origin);
             const dialog = document.createElement('dialog');
