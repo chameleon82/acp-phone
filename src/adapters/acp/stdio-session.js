@@ -149,10 +149,8 @@ function startAcpProcess({target, command}) {
     try {
         child = spawn(command, target.args ?? [], {
             cwd: target.cwd ?? process.cwd(),
-            // The voice server's OpenAI-compatible STT/TTS credentials must not
-            // override a locally authenticated ACP agent such as Codex. Codex
-            // otherwise prefers these inherited variables over its own ChatGPT
-            // login and can send the voice gateway token to its model provider.
+            // ACP agents inherit the configured gateway credentials; targets
+            // may override environment variables explicitly when necessary.
             env: acpProcessEnvironment(process.env, target),
             stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -169,14 +167,6 @@ function startAcpProcess({target, command}) {
 
 function acpProcessEnvironment(environment, target) {
     const childEnvironment = {...environment};
-    // Do not pass this application's speech-provider configuration into a
-    // local agent process. Keep all other ambient environment variables, which
-    // lets an ACP adapter retain normal PATH, HOME, and platform settings.
-    delete childEnvironment.OPENAI_API_KEY;
-    delete childEnvironment.OPENAI_BASE_URL;
-    delete childEnvironment.OPENAI_ORG_ID;
-    delete childEnvironment.OPENAI_PROJECT_ID;
-
     if (target.environment !== undefined) {
         if (!isEnvironmentMap(target.environment)) {
             throw new VoiceCallError(`ACP target "${target.id}" has invalid environment variables.`, {
