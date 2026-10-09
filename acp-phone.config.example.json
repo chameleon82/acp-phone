@@ -6,7 +6,7 @@
     {
       "id": "local-codex",
       "label": "Local Codex Agent",
-      "adapterModule": "./examples/adapters/local-acp-session.js",
+      "adapterModule": "stdio",
       "command": "codex-acp",
       "args": [],
       "cwd": "."

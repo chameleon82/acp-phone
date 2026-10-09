@@ -2,6 +2,7 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 import {TargetNotFoundError, VoiceCallError} from '../../domain/errors.js';
+import {createAcpStdioSession} from './stdio-session.js';
 
 /**
  * Routes an allowed target id to an ACP session adapter.
@@ -17,6 +18,10 @@ export function createConfiguredAcpSessionFactory({targets, baseDirectory = proc
         async open({target, call, signal, sessionId}) {
             const configuredTarget = targetsById.get(target.id);
             if (!configuredTarget) throw new TargetNotFoundError(target.id);
+            const resolvedTarget = {...configuredTarget, cwd: resolve(baseDirectory, configuredTarget.cwd ?? '.')};
+            if (configuredTarget.adapterModule === 'stdio') {
+                return createAcpStdioSession({target: resolvedTarget, signal, sessionId});
+            }
             if (!configuredTarget.adapterModule) {
                 throw new VoiceCallError(`ACP target "${target.id}" does not define an adapter module.`, {
                     code: 'ACP_ADAPTER_NOT_CONFIGURED',
@@ -44,7 +49,7 @@ export function createConfiguredAcpSessionFactory({targets, baseDirectory = proc
             }
 
             const session = await adapterModule.createAcpSession({
-                target: configuredTarget,
+                target: resolvedTarget,
                 call,
                 signal,
                 sessionId,

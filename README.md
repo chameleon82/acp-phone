@@ -42,7 +42,24 @@ If the first audible response takes more than 1 second, the browser requests a f
 - An OpenAI API key with access to the selected audio and text models
 - A local ACP agent plus an adapter module using the ACP SDK/version that agent supports
 
-## Run the example
+## Install and run the app
+
+After the npm release is published:
+
+```sh
+mkdir my-acp-phone
+cd my-acp-phone
+npx acp-phone init
+# Edit .env: set OPENAI_BASE_URL to your gateway and OPENAI_API_KEY.
+# Install your ACP agent separately; the default needs codex-acp on PATH.
+npx acp-phone
+```
+
+Or install globally with `npm install -g acp-phone` and run `acp-phone init` followed by `acp-phone`.
+The app reads `.env` and `acp-phone.config.json` from your current directory. Existing files are kept by `init`.
+Session history is saved under `.acp-phone` alongside the configuration. Set `ACP_PHONE_CONFIG` to use another configuration file; relative agent paths are resolved from that file's directory. The built-in `stdio` adapter needs no separate adapter file. Run `acp-phone --help` for commands.
+
+## Run from source
 
 ```sh
 npm install
@@ -73,7 +90,7 @@ npm test
     {
       "id": "local-codex",
       "label": "Local Codex Agent",
-      "adapterModule": "./examples/adapters/local-acp-session.js",
+      "adapterModule": "stdio",
       "command": "codex-acp",
       "args": [],
       "cwd": "."

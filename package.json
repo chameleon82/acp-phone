@@ -1,7 +1,7 @@
 {
   "name": "acp-phone",
   "version": "0.1.0",
-  "description": "Composable Node.js voice bridge for ACP agents using OpenAI speech APIs.",
+  "description": "A local voice calling app for ACP agents, with streaming speech and persistent conversations.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -9,7 +9,12 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "bin",
     "src",
+    "examples/web",
+    "examples/adapters/local-acp-session.js",
+    "acp-phone.config.example.json",
+    ".env.example",
     "README.md",
     "DESIGN.md",
     "LICENSE"
@@ -21,7 +26,8 @@
     "start": "node examples/web/server.js",
     "dev": "node --watch examples/web/server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check examples/web/server.js && node --check examples/web/public/app.js && node --check examples/web/public/pcm-capture.js"
+    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check examples/web/server.js && node --check examples/web/public/app.js && node --check examples/web/public/pcm-capture.js && node --check bin/acp-phone.js",
+    "prepublishOnly": "npm run check && npm test"
   },
   "keywords": [
     "acp",
@@ -31,12 +37,23 @@
     "stt",
     "voice"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "multer": "^2.0.2",
     "openai": "^7.30.0"
+  },
+  "bin": {
+    "acp-phone": "./bin/acp-phone.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chameleon82/acp-phone.git"
+  },
+  "homepage": "https://github.com/chameleon82/acp-phone#readme",
+  "bugs": {
+    "url": "https://github.com/chameleon82/acp-phone/issues"
   }
 }

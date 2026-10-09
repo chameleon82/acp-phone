@@ -19,8 +19,8 @@ import {
 } from '../../src/index.js';
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const rootDirectory = resolve(directory, '../..');
-const configPath = resolve(rootDirectory, process.env.ACP_PHONE_CONFIG ?? 'acp-phone.config.json');
+const configPath = resolve(process.cwd(), process.env.ACP_PHONE_CONFIG ?? 'acp-phone.config.json');
+const rootDirectory = dirname(configPath);
 const config = await loadConfig(configPath);
 const maxAudioBytes = config.limits?.maxAudioBytes ?? 10 * 1024 * 1024;
 const allowedAudioTypes = new Set(['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav']);
@@ -292,7 +292,7 @@ app.use((error, _request, response, _next) => {
 
 const port = Number(process.env.ACP_PHONE_PORT ?? 3000);
 const server = app.listen(port, () => {
-    console.log(`ACP Phone example listening at http://localhost:${port}`);
+    console.log(`ACP Phone listening at http://localhost:${server.address().port}`);
     console.log('[ACP Phone] configured ACP targets', config.targets.map(({id, label, command, cwd}) => ({id, label, command, cwd})));
     console.log('[ACP Phone] voice turns use automatic end-of-speech detection, then STT → streaming ACP → sentence TTS.');
 });
@@ -336,6 +336,6 @@ async function loadConfig(path) {
 
 function requiredEnvironment(name) {
     const value = process.env[name];
-    if (!value) throw new Error(`${name} is required. Copy .env.example to .env and set it.`);
+    if (!value) throw new Error(`${name} is required. Run acp-phone init and set it in .env.`);
     return value;
 }
