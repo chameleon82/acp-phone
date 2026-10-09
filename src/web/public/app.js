@@ -1,6 +1,6 @@
 // Requests and assets follow the mount path of the built-in call screen.
 import {isSkin} from './skins.js';
-import {animateMatrixNotes} from './matrix-notes.js?v=letter-shimmer-3';
+import {animateMatrixNotes} from './matrix-notes.js?v=changing-symbols-25';
 import {createScreenWakeLock} from './screen-wake-lock.js';
 import {createBrowserId} from './browser-id.js';
 function phonePath(path) {

@@ -15,6 +15,49 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
     let rain;
     const columns = new Map();
     const cleanupTimers = new Set();
+    const activeLetters = new Set();
+    let characterPool = [];
+    let mutationTimer;
+    let destroyed = false;
+
+    function replaceCharacter(character) {
+        const choices = characterPool.filter(candidate => candidate !== character);
+        return choices[Math.floor(Math.random() * choices.length)] ?? character;
+    }
+    function changeOneSymbol(text) {
+        const symbols = text.split('\n');
+        const index = Math.floor(Math.random() * symbols.length);
+        symbols[index] = replaceCharacter(symbols[index]);
+        return symbols.join('\n');
+    }
+    function scheduleCharacterChanges() {
+        if (destroyed || mutationTimer !== undefined || !columns.size) return;
+        mutationTimer = setTimeout(() => {
+            mutationTimer = undefined;
+            if (destroyed) return;
+            if (document.visibilityState !== 'hidden') {
+                // Update only a few symbols; changing entire columns at once
+                // would make the background flash again.
+                const candidates = [...columns.values()];
+                const changes = Math.min(25, candidates.length);
+                for (let i = 0; i < changes; i++) {
+                    const index = Math.floor(Math.random() * candidates.length);
+                    const [column] = candidates.splice(index, 1);
+                    column.textContent = changeOneSymbol(column.textContent);
+                }
+                const letters = [...activeLetters];
+                if (letters.length) {
+                    const letter = letters[Math.floor(Math.random() * letters.length)];
+                    const character = replaceCharacter(letter.textContent);
+                    letter.textContent = character;
+                    letter.setAttribute('data-character', character);
+                    letter.setAttribute('data-trail', changeOneSymbol(letter.getAttribute('data-trail')));
+                }
+            }
+            scheduleCharacterChanges();
+        }, randomBetween(250, 550));
+        mutationTimer.unref?.();
+    }
     function cancel() {
         background.style.opacity = '';
         notes.parentElement.classList.add('matrix-reading');
@@ -81,10 +124,12 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
                 letter.style.setProperty('--trail-shimmer-duration', `${randomBetween(2, 4.5)}s`);
                 letter.style.setProperty('--shimmer-delay', `${-randomBetween(0, 5)}s`);
                 fallingLetters.append(letter);
+                activeLetters.add(letter);
                 count++;
             }
         }
         if (!count) {cancel(); return;}
+        characterPool = [...new Set([...characters, ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'])];
         // Keep persistent rain across the whole viewport, including the call's side padding.
         const columnCount = Math.ceil(rainBounds.width / columnStep);
         const trailLength = Math.ceil(rainBounds.height / 12) + 4;
@@ -108,10 +153,15 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
             column.textContent = Array(trailLength).fill(character).join('\n');
         }
         rain.append(fallingLetters);
+        scheduleCharacterChanges();
         background.style.opacity = '0';
         notes.parentElement.classList.remove('matrix-reading');
         // Completed letters leave their persistent columns behind, without accumulating DOM forever.
-        const timer = setTimeout(() => {fallingLetters.remove(); cleanupTimers.delete(timer);}, 38000);
+        const timer = setTimeout(() => {
+            for (const letter of fallingLetters.children) activeLetters.delete(letter);
+            fallingLetters.remove();
+            cleanupTimers.delete(timer);
+        }, 38000);
         timer.unref?.();
         cleanupTimers.add(timer);
     }
@@ -119,6 +169,10 @@ export function animateMatrixNotes({document, MutationObserver, notes, sources, 
     for (const source of sources) observer.observe(source, {childList: true, characterData: true, subtree: true});
     render();
     return {dissolve, cancel, destroy() {
+        destroyed = true;
+        clearTimeout(mutationTimer);
+        mutationTimer = undefined;
+        activeLetters.clear();
         observer.disconnect();
         for (const timer of cleanupTimers) clearTimeout(timer);
         cleanupTimers.clear();

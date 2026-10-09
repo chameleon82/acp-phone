@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {animateMatrixNotes} from '../src/web/public/matrix-notes.js';
 
-test('Matrix retains its rain through new text and interruption, then adds the next spoken reply', () => {
+test('Matrix changes individual symbols, retains rain through replies, and stops updates on cleanup', ({mock}) => {
+    mock.timers.enable({apis: ['setTimeout']});
+    let writes = 0;
     function element() {
+        const attributes = new Map();
         return {
             getBoundingClientRect: () => ({left: 0, top: 0, width: 360, height: 300}),
             children: [], style: {setProperty() {}}, classList: {add() {}, remove() {}},
-            set textContent(value) {this.text = value; this.firstChild = {textContent: value};},
+            set textContent(value) {writes++; this.text = value; this.firstChild = {textContent: value};},
             get textContent() {return this.text ?? '';},
-            setAttribute() {},
+            setAttribute(key, value) {attributes.set(key, value);},
+            getAttribute(key) {return attributes.get(key);},
             append(child) {child.parentElement = this; this.children.push(child);},
             remove() {
                 if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
@@ -45,6 +49,17 @@ test('Matrix retains its rain through new text and interruption, then adds the n
         assert.equal(rainColumns[0].style.left, '0px');
         assert.equal(rainColumns.at(-1).style.left, '348px');
         const originalHeads = rain.children.find(child => child.className === 'matrix-rain-heads');
+        const originalSymbols = rainColumns.map(column => column.textContent);
+        mock.timers.tick(550);
+        const changedColumns = rainColumns.filter((column, index) => column.textContent !== originalSymbols[index]);
+        assert.equal(changedColumns.length, 25);
+        for (const changed of changedColumns) {
+            const before = originalSymbols[rainColumns.indexOf(changed)].split('\n');
+            const after = changed.textContent.split('\n');
+            assert.equal(after.filter((character, index) => character !== before[index]).length, 1);
+        }
+        assert.equal(sources[0].textContent, 'Hello');
+        assert.equal(sources[1].textContent, 'First answer');
         sources[1].textContent = 'Second answer';
         update();
         controller.cancel();
@@ -61,4 +76,7 @@ test('Matrix retains its rain through new text and interruption, then adds the n
     } finally {controller.destroy();}
     assert.equal(disconnected, true);
     assert.equal(host.children.some(child => child.className === 'matrix-rain'), false);
+    const writesAfterCleanup = writes;
+    mock.timers.tick(2000);
+    assert.equal(writes, writesAfterCleanup);
 });
