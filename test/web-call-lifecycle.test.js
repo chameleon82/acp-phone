@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = (await readFile(new URL('../examples/web/public/app.js', import.meta.url), 'utf8'))
+const source = (await readFile(new URL('../src/web/public/app.js', import.meta.url), 'utf8'))
     .replace('await loadTargets();', '');
 
 function browser(overrides = {}) {
@@ -35,6 +35,7 @@ function browser(overrides = {}) {
         AudioContext: class {async resume() {} async close() {}},
         fetch: async () => ({ok: true}),
         AbortController, AbortSignal, Blob, FormData, Uint8Array, atob, TextDecoderStream,
+        URLSearchParams,
         URL: {createObjectURL: () => 'blob:audio', revokeObjectURL() {}},
         Audio: class {
             addEventListener() {}
@@ -353,7 +354,7 @@ test('browser restart restores the selected agent', async () => {
     const page = browser({
         localStorage: {getItem: (key) => key === 'acp-phone.target' ? 'agent-b' : null, setItem() {}},
         Option: class {},
-        fetch: async () => ({ok: true, json: async () => ({targets: [
+        fetch: async () => ({ok: true, json: async () => ({contacts: [
             {id: 'agent-a', label: 'A'}, {id: 'agent-b', label: 'B'},
         ]})}),
     });
@@ -363,6 +364,65 @@ test('browser restart restores the selected agent', async () => {
     await page.run('loadTargets()');
     assert.equal(target.value, 'agent-b');
     assert.equal(page.run('state'), 'ready');
+});
+
+test('direct call selects its requested contact instead of the last used contact', async () => {
+    const page = browser({
+        window: {location: {search: '?contact=agent-b'}, addEventListener() {}, MediaRecorder: class {}},
+        Option: class {},
+        localStorage: {getItem: key => key === 'acp-phone.target' ? 'agent-a' : null, setItem() {}},
+        fetch: async () => ({ok: true, json: async () => ({contacts: [
+            {id: 'agent-a', label: 'A'}, {id: 'agent-b', label: 'B'},
+        ]})}),
+    });
+    page.elements.get('#target').add = () => {};
+    page.elements.get('#target').selectedOptions = [{textContent: 'B'}];
+    page.run("let dialed; startCall = async () => {dialed = targetSelect.value; setState('connecting', 'Connecting', '');};");
+    await page.run('loadTargets()');
+    assert.equal(page.run('dialed'), 'agent-b');
+    assert.equal(page.elements.get('#contacts-view').hidden, true);
+    assert.equal(page.elements.get('#call-view').hidden, false);
+    assert.equal(page.elements.get('#agent-list').children.length, 0);
+});
+
+test('an unknown direct contact never opens a call and keeps its error visible', async () => {
+    const page = browser({
+        window: {location: {search: '?contact=missing'}, addEventListener() {}, MediaRecorder: class {}},
+        Option: class {},
+        fetch: async () => ({ok: true, json: async () => ({contacts: [{id: 'a', label: 'A'}]})}),
+    });
+    page.elements.get('#target').add = () => {};
+    page.run('let dialed = false; startCall = async () => {dialed = true;};');
+    await page.run('loadTargets()');
+    assert.equal(page.run('dialed'), false);
+    assert.equal(page.run('state'), 'error');
+    assert.equal(page.elements.get('#call-view').hidden, false);
+    assert.match(page.elements.get('#status').textContent, /Unknown/);
+});
+
+test('embedded hangup reports completion to the host after the ending sound delay', () => {
+    const messages = [];
+    const parent = {postMessage: (...args) => messages.push(args)};
+    const page = browser({window: {
+        location: {search: '?contact=a&channel=call-channel&hostOrigin=https%3A%2F%2Fhost.example'},
+        parent, addEventListener() {}, MediaRecorder: class {},
+    }});
+    page.run("speakerEnabled = false; state = 'connected'; callId = 'saved-call'; targetSelect.value = 'a'; endCall({animate: true});");
+    assert.equal(messages.length, 0);
+    const ending = [...page.timeouts.values()].find(timer => timer.delay === 2000);
+    ending.callback();
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0][0].type, 'acp-phone.ended');
+    assert.equal(messages[0][0].channel, 'call-channel');
+    assert.equal(messages[0][1], 'https://host.example');
+});
+
+test('call screen requests stay under the mount path including trailing slash URLs', () => {
+    for (const pathname of ['/phone/call', '/phone/call/']) {
+        const page = browser({window: {location: {pathname}, addEventListener() {}, MediaRecorder: class {}}});
+        assert.equal(page.run("phonePath('/api/contacts')"), '/phone/api/contacts');
+        assert.equal(page.run("phonePath('/pcm-capture.js')"), '/phone/pcm-capture.js');
+    }
 });
 
 test('a network error automatically restores the same conversation before the next turn', async () => {
@@ -535,7 +595,7 @@ test('microphone capture preserves samples across audio processing block boundar
         AudioWorkletProcessor: class {port = {postMessage(samples) {chunks.push([...samples]);}};},
         registerProcessor(name, processor) {assert.equal(name, 'pcm-capture'); Capture = processor;},
     });
-    vm.runInContext(await readFile(new URL('../examples/web/public/pcm-capture.js', import.meta.url), 'utf8'), context);
+    vm.runInContext(await readFile(new URL('../src/web/public/pcm-capture.js', import.meta.url), 'utf8'), context);
     const capture = new Capture();
     for (let index = 0; index < 65; index++) {
         const samples = Float32Array.from({length: 128}, (_, i) => index * 128 + i);

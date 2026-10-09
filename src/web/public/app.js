@@ -1,3 +1,10 @@
+// Requests and assets follow the mount path of the built-in call screen.
+function phonePath(path) {
+    const prefix = (window.location?.pathname ?? '/').replace(/\/+$/, '').replace(/\/[^/]*$/, '');
+    return `${prefix}${path}`;
+}
+function phoneFetch(path, options) { return fetch(phonePath(path), options); }
+
 const screen = document.querySelector('.call-screen');
 const contactsView = document.querySelector('#contacts-view');
 const callView = document.querySelector('#call-view');
@@ -20,6 +27,16 @@ const voicePrompt = document.querySelector('#voice-prompt');
 const transcript = document.querySelector('#transcript');
 const transcriptStatus = document.querySelector('#transcript-status');
 const agentText = document.querySelector('#agent-text');
+const launchParameters = new URLSearchParams(window.location?.search ?? '');
+const directContactId = launchParameters.get('contact');
+const hostChannel = launchParameters.get('channel');
+const hostOrigin = launchParameters.get('hostOrigin');
+
+function notifyCallEnded() {
+    if (hostChannel && hostOrigin && window.parent !== window) {
+        window.parent.postMessage({type: 'acp-phone.ended', channel: hostChannel}, hostOrigin);
+    }
+}
 
 const STORAGE_KEY = 'acp-phone.conversations';
 const TARGET_STORAGE_KEY = 'acp-phone.target';
@@ -85,8 +102,12 @@ let thinkingRequest;
 let thinkingAudio;
 let previousThinkingPhrase = '';
 
-await loadTargets();
-callButton.addEventListener('click', () => state === 'ready' ? startCall() : endCall({animate: true}));
+callButton.addEventListener('click', () => state === 'ready' && !hostChannel ? startCall() : endCall({animate: true}));
+window.addEventListener('message', event => {
+    if (!hostChannel || event.source !== window.parent || event.origin !== hostOrigin
+        || event.data?.channel !== hostChannel || event.data.type !== 'acp-phone.end') return;
+    endCall({animate: true});
+});
 window.addEventListener('pagehide', () => endCall({release: false}));
 window.addEventListener('online', () => {
     if (state === 'reconnecting') {
@@ -104,20 +125,29 @@ targetProfile.addEventListener('click', () => {
     if (state === 'ready') void startCall();
 });
 
+await loadTargets();
+
 async function loadTargets() {
+    const generation = callGeneration;
     try {
-        const response = await fetch('/api/targets');
+        const response = await phoneFetch('/api/contacts');
         if (!response.ok) throw new Error('Unable to load configured ACP targets.');
-        const {targets} = await response.json();
+        const {contacts: targets} = await response.json();
+        if (generation !== callGeneration) return;
         for (const target of targets) targetSelect.add(new Option(target.label, target.id));
         if (!targets.length) throw new Error('No ACP targets are configured.');
-        renderAgentList(targets);
+        if (!directContactId) renderAgentList(targets);
         try {
             const selected = localStorage.getItem(TARGET_STORAGE_KEY);
             if (targets.some((target) => target.id === selected)) targetSelect.value = selected;
         } catch {}
+        if (directContactId) {
+            if (!targets.some(target => target.id === directContactId)) throw new Error('Unknown ACP Phone contact.');
+            targetSelect.value = directContactId;
+        }
         renderTarget();
         setState('ready', 'Ready to call', 'Choose an agent to start a call.');
+        if (directContactId) await startCall();
     } catch (error) {
         setState('error', error.message, 'Configure an ACP target, then try again.');
     }
@@ -180,7 +210,7 @@ async function startCall() {
     activeRequest = request;
     let connected = false;
     try {
-        const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}/resume`, {
+        const response = await phoneFetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}/resume`, {
             method: 'POST', signal: request.signal,
         });
         if (!response.ok) {
@@ -229,7 +259,7 @@ async function playGreeting(generation) {
     greetingRequest = request;
     const replyGeneration = playbackGeneration;
     try {
-        const response = await fetch('/api/greeting-audio', {method: 'POST',
+        const response = await phoneFetch('/api/greeting-audio', {method: 'POST',
             headers: {'Content-Type': 'application/json'}, body: JSON.stringify({previous: previousGreeting}),
             signal: request.signal});
         if (!response.ok) return;
@@ -262,7 +292,7 @@ function endCall({release = true, animate = false} = {}) {
     hangupContext?.close();
     hangupContext = undefined;
     if (callId && release) {
-        void fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}`, {
+        void phoneFetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}`, {
             method: 'DELETE', keepalive: true,
         }).catch(() => {});
     }
@@ -311,6 +341,7 @@ function endCall({release = true, animate = false} = {}) {
             hangupContext?.close();
             hangupContext = undefined;
             setState('ready', 'Ready to call', 'Choose an agent to start a call.');
+            notifyCallEnded();
         }, 2000);
         if (speakerEnabled) void playHangupSound(generation);
     }
@@ -538,7 +569,7 @@ async function sendUtterance(chunks, mimeType) {
     const request = new AbortController();
     candidateRequest = request;
     try {
-        const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/turn/stream`, {
+        const response = await phoneFetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/turn/stream`, {
             method: 'POST', body: form, signal: request.signal,
         });
         if (!response.ok) {
@@ -626,7 +657,7 @@ async function reconnectCall() {
     const request = new AbortController();
     recoveryRequest = request;
     try {
-        const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}/resume`, {
+        const response = await phoneFetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}/resume`, {
             method: 'POST', signal: AbortSignal.any([request.signal, AbortSignal.timeout(10000)]),
         });
         if (generation !== callGeneration) return;
@@ -657,7 +688,7 @@ async function checkConnection() {
     const request = new AbortController();
     healthRequest = request;
     try {
-        const response = await fetch('/api/health', {
+        const response = await phoneFetch('/api/health', {
             cache: 'no-store', signal: AbortSignal.any([request.signal, AbortSignal.timeout(5000)]),
         });
         if (!response.ok) throw new Error('Server unavailable');
@@ -728,7 +759,7 @@ function startThinkingNotice(delay = 1000, preserveCue = false) {
         thinkingRequest = request;
         let cue;
         try {
-            const response = await fetch('/api/thinking-audio', {
+            const response = await phoneFetch('/api/thinking-audio', {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, signal: request.signal,
                 body: JSON.stringify({transcript: message.slice(0, 1000),
                     draft: agentText.textContent === '—' ? '' : agentText.textContent.slice(-500),
@@ -787,7 +818,7 @@ async function startLiveTranscription() {
         return;
     }
     try {
-        await context.audioWorklet.addModule('/pcm-capture.js');
+        await context.audioWorklet.addModule(phonePath('/pcm-capture.js'));
         if (generation !== callGeneration || state === 'reconnecting') return;
         const source = context.createMediaStreamSource(recordingStream);
         const node = new AudioWorkletNode(context, 'pcm-capture');
@@ -830,7 +861,7 @@ async function updateLivePreview(preview) {
     const form = new FormData();
     form.append('audio', audio, 'preview.wav');
     try {
-        const response = await fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/transcription`, {
+        const response = await phoneFetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/transcription`, {
             method: 'POST', body: form,
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]),
         });
@@ -1146,15 +1177,16 @@ function setState(nextState, statusMessage, prompt) {
     status.textContent = statusMessage;
     voicePrompt.textContent = prompt;
     const inCall = !['loading', 'ready', 'error'].includes(nextState);
-    contactsView.hidden = inCall;
-    callView.hidden = !inCall;
+    contactsView.hidden = Boolean(directContactId) || inCall;
+    callView.hidden = !directContactId && !inCall;
     contactsStatus.textContent = inCall ? '' : statusMessage;
     screen.classList.toggle('in-call', inCall);
     screen.classList.toggle('recording', nextState === 'recording');
     screen.classList.toggle('playing', nextState === 'playing');
     screen.classList.toggle('thinking', nextState === 'thinking');
     callButton.classList.toggle('recording', nextState === 'recording');
-    callButton.disabled = ['loading', 'error', 'ending'].includes(nextState);
+    callButton.disabled = nextState === 'ending' || (!hostChannel && ['loading', 'error'].includes(nextState));
+    if (hostChannel && ['loading', 'ready', 'error'].includes(nextState)) callLabel.textContent = 'End';
     callButton.setAttribute('aria-pressed', String(inCall));
     muteButton.disabled = !inCall || ['connecting', 'ending'].includes(nextState);
     speakerButton.disabled = !inCall || ['connecting', 'ending'].includes(nextState);

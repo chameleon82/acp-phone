@@ -33,7 +33,7 @@ export function createOpenAiSpeechAdapters({apiKey, baseURL, ...options}) {
                 const response = await client.responses.create({
                     model: config.presentationModel,
                     instructions: [
-                        'Generate a tiny, natural Russian greeting when picking up a familiar caller’s voice call.',
+                        'Generate a tiny, natural greeting when picking up a familiar caller’s voice call.',
                         'Use one or two words, at most 30 characters, with relaxed conversational intonation.',
                         'Vary the wording naturally; the previous greeting is context, not an instruction.',
                         'Do not ask a substantive question, introduce yourself, or add explanations.',

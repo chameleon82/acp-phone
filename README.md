@@ -2,7 +2,7 @@
 
 A strict ECMAScript-module Node.js voice bridge for ACP agents. The web example automatically detects a caller's end of speech, transcribes the completed utterance with OpenAI STT, streams ACP text updates, synthesizes each completed response sentence with OpenAI TTS, and begins queued playback before the agent's entire response completes.
 
-The package is deliberately reusable: the core has no HTTP/UI dependency. The included mobile web example is one integration, not the product boundary.
+The package is deliberately reusable: the core has no HTTP/UI dependency. Separate server and browser entry points provide the complete embeddable call UI. The web example supplies a contacts page and demonstrates how to host the module.
 
 ## Status
 
@@ -40,7 +40,7 @@ If the first audible response takes more than 1 second, the browser requests a f
 
 - Node.js 20 or newer
 - An OpenAI API key with access to the selected audio and text models
-- A local ACP agent plus an adapter module using the ACP SDK/version that agent supports
+- A local ACP agent supporting the stable ACP v1 protocol over stdio
 
 ## Install and run the app
 
@@ -51,13 +51,13 @@ mkdir my-acp-phone
 cd my-acp-phone
 npx acp-phone init
 # Edit .env: set OPENAI_BASE_URL to your gateway and OPENAI_API_KEY.
-# Install your ACP agent separately; the default needs codex-acp on PATH.
+# Install your ACP agents separately: codex-acp and claude-agent-acp on PATH.
 npx acp-phone
 ```
 
 Or install globally with `npm install -g acp-phone` and run `acp-phone init` followed by `acp-phone`.
 The app reads `.env` and `acp-phone.config.json` from your current directory. Existing files are kept by `init`.
-Session history is saved under `.acp-phone` alongside the configuration. Set `ACP_PHONE_CONFIG` to use another configuration file; relative agent paths are resolved from that file's directory. The built-in `stdio` adapter needs no separate adapter file. Run `acp-phone --help` for commands.
+Session history is saved under `.acp-phone` alongside the configuration. Set `ACP_PHONE_CONFIG` to use another configuration file; relative agent paths are resolved from that file's directory. ACP Phone connects to the configured command using its built-in stdio implementation. No adapter setting or separate adapter file is needed. Run `acp-phone --help` for commands.
 
 ## Run from source
 
@@ -81,7 +81,18 @@ npm test
 
 ## Configuration
 
-`.env` holds secrets and selected OpenAI models. It is ignored by Git. `acp-phone.config.json` has only non-secret target configuration:
+`.env` is optional. Set gateway credentials and selected OpenAI models in the process environment, `.env`, or a top-level `environment` object in `acp-phone.config.json`. Process environment takes priority over `.env`, which takes priority over configuration defaults. Agents inherit these values; a target's own `environment` can override them for that agent. Values are literal strings; `${VARIABLE}` substitution is not supported.
+
+For example, add this alongside `targets` to configure the app without `.env`:
+
+```json
+"environment": {
+  "OPENAI_API_KEY": "your-gateway-key",
+  "OPENAI_BASE_URL": "https://gateway.example/v1"
+}
+```
+
+Keep configuration containing credentials out of version control. A complete target configuration looks like:
 
 ```json
 {
@@ -90,7 +101,6 @@ npm test
     {
       "id": "local-codex",
       "label": "Local Codex Agent",
-      "adapterModule": "stdio",
       "command": "codex-acp",
       "args": [],
       "cwd": "."
@@ -128,6 +138,55 @@ export async function createAcpSession({ target, call, signal }) {
 This small normalized boundary isolates ACP SDK churn and supports local stdio sessions now as well as remote ACP transports later. Never accept adapter paths, shell commands, arbitrary URLs, or credentials from the browser.
 
 ## Embedding the core
+
+### Embed the call screen in your own app
+
+First mount the server module inside your own Express application. Importing it does not start a listener, read configuration files, load `.env`, or register process signal handlers. Your app supplies the contacts and gateway configuration:
+
+```js
+import express from 'express';
+import {createAcpPhoneApp} from 'acp-phone/server';
+
+const app = express();
+const phone = createAcpPhoneApp({
+  contacts: [
+    {id: 'codex', label: 'Codex', command: 'codex-acp', cwd: '.'},
+    {id: 'claude', label: 'Claude', command: 'claude-agent-acp', cwd: '.'},
+  ],
+  speech: {
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: process.env.OPENAI_BASE_URL,
+  },
+});
+app.use('/phone', phone.app);
+app.listen(3000);
+// During your application's shutdown, await phone.close() to release ACP sessions.
+```
+
+The module serves its API and call assets beneath the mount path. It does not serve the example's contacts page. `baseDirectory` defaults to the host process's working directory; agent paths and `sessionStorePath` are relative to it. The default session store is `.acp-phone/sessions.json`; pass `sessionStorePath: false` to disable disk persistence. Optional `environment` defaults are inherited by agents and used for speech settings, with process environment taking priority. Per-contact `environment` overrides affect that agent. Explicit `speech` settings override speech defaults.
+
+The browser entry point exposes contacts and a call screen independently of the example's contacts page:
+
+```js
+import {createAcpPhone} from 'acp-phone/browser';
+
+const phone = createAcpPhone({baseUrl: '/phone/'});
+const contacts = await phone.getContacts(); // [{id, label}]; no commands or secrets
+
+callIcon.addEventListener('click', () => {
+  phone.openCall(contacts[0].id, {
+    onEnd: () => callIcon.focus(),
+  });
+});
+```
+
+`openCall(contactId)` synchronously opens a modal containing the built-in call screen and starts connecting to that contact without showing a contact list. It returns `{close()}` to end the call from the host app. Only one call can be open per client instance. Hangup retains the existing completion sound and then closes the modal. Conversation IDs stay separate for each contact and survive later calls.
+
+For an unbundled browser app, import `createAcpPhone` from `/phone/acp-phone.js` when mounted at `/phone`. A separate ACP Phone server also works by passing its URL as `baseUrl`. Calling the contacts API from another origin requires the host deployment to configure CORS; embedded microphone access requires HTTPS (or localhost) and a Permissions Policy allowing the phone origin. No new authentication scheme is provided by this browser client. Hosts can mount their existing authentication middleware before `phone.app`.
+
+The call screen is available directly at `/phone/call?contact=CONTACT_ID` when mounted at `/phone`. Unknown contacts show an error and do not open an agent session.
+
+### Use the conversation service directly
 
 ```js
 import {

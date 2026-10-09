@@ -66,10 +66,18 @@ src/
   adapters/
     openai/                     OpenAI implementations of STT, presenter, TTS
     acp/                        ACP stdio/session adapters
-examples/web/                   configurable local browser app and HTTP server
+  web/client.js                 public browser API: getContacts / openCall
+  web/server.js                 mountable API and call assets; no startup side effects
+  web/thinking-audio.js          contextual waiting cue synthesis
+  web/public/                   built-in call screen and audio lifecycle
+examples/web/                   configurable HTTP host and contacts API consumer
 ```
 
 `VoiceCallService` owns the ordered workflow and is the main embedding API. Ports are explicit JavaScript contracts, enabling a host app to replace OpenAI, ACP routing, storage, or the HTTP boundary without forking the workflow.
+
+The separate `acp-phone/browser` entry point exports `createAcpPhone`. A host UI can render its own call icon and invoke `openCall(contactId)` to open the built-in call screen directly in a modal iframe. `getContacts()` fetches only public IDs and labels from `/api/contacts`; the example contacts page consumes this API. The call screen reports completion to its host using messages checked against the expected origin, frame, and channel. Provider credentials and process configuration stay server-side. Cross-origin hosting requires deployment-level CORS and microphone Permissions Policy configuration.
+
+The `acp-phone/server` entry point exports `createAcpPhoneApp({contacts, speech, ...})`, returning `{app, close}`. Hosts mount `app` under their chosen path (for example `/phone`) and own their HTTP listener, authentication middleware, configuration, and shutdown. Browser requests and assets follow the mount path. The module neither imports the example nor reads its config files or modifies global environment. `examples/web/server.js` is only the demonstration launcher and static contacts-page host.
 
 ### 4.2 Public library API (target)
 

@@ -6,13 +6,14 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./browser": "./src/web/client.js",
+    "./server": "./src/web/server.js",
     "./package.json": "./package.json"
   },
   "files": [
     "bin",
     "src",
     "examples/web",
-    "examples/adapters/local-acp-session.js",
     "acp-phone.config.example.json",
     ".env.example",
     "README.md",
@@ -26,7 +27,7 @@
     "start": "node examples/web/server.js",
     "dev": "node --watch examples/web/server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check examples/web/server.js && node --check examples/web/public/app.js && node --check examples/web/public/pcm-capture.js && node --check bin/acp-phone.js",
+    "check": "node --check src/index.js && node --check src/application/voice-call-service.js && node --check src/adapters/acp/stdio-session.js && node --check src/web/server.js && node --check examples/web/server.js && node --check src/web/client.js && node --check src/web/public/app.js && node --check src/web/public/pcm-capture.js && node --check examples/web/public/contacts.js && node --check bin/acp-phone.js",
     "prepublishOnly": "npm run check && npm test"
   },
   "keywords": [

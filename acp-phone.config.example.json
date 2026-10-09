@@ -6,8 +6,14 @@
     {
       "id": "local-codex",
       "label": "Local Codex Agent",
-      "adapterModule": "stdio",
       "command": "codex-acp",
+      "args": [],
+      "cwd": "."
+    },
+    {
+      "id": "local-claude",
+      "label": "Local Claude Agent",
+      "command": "claude-agent-acp",
       "args": [],
       "cwd": "."
     }

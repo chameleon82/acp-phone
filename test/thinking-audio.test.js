@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createThinkingAudio} from '../examples/web/thinking-audio.js';
+import {createThinkingAudio} from '../src/web/thinking-audio.js';
 
 test('waiting audio generates a fresh contextual phrase before synthesis', async () => {
     const inputs = [];

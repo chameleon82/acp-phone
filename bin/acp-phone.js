@@ -7,7 +7,7 @@ const command = process.argv[2] ?? 'start';
 try {
     if (process.argv.length > 3) throw new Error('Unexpected arguments. Run acp-phone --help.');
     if (['--help', '-h', 'help'].includes(command)) {
-        console.log('ACP Phone\n\n  acp-phone init       Create configuration in the current directory\n  acp-phone [start]    Start the voice app\n  acp-phone --version  Print the version\n\nSet OPENAI_API_KEY and OPENAI_BASE_URL in .env, then open http://localhost:3000.');
+        console.log('ACP Phone\n\n  acp-phone init       Create configuration in the current directory\n  acp-phone [start]    Start the voice app\n  acp-phone --version  Print the version\n\nSet OPENAI_API_KEY and OPENAI_BASE_URL in your environment, optional .env, or configuration environment, then open http://localhost:3000.');
     } else if (['--version', '-v'].includes(command)) {
         const {version} = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
         console.log(version);
@@ -24,7 +24,7 @@ try {
                 console.log(`Kept existing ${name}`);
             }
         }
-        console.log('Set your gateway URL and key in .env, configure your ACP agents, then run acp-phone.');
+        console.log('Set your gateway URL and key in your environment, optional .env, or configuration environment, configure your ACP agents, then run npx acp-phone.');
     } else if (command === 'start') {
         await import('../examples/web/server.js');
     } else {

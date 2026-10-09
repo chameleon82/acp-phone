@@ -6,15 +6,17 @@ import {createAcpStdioSession, createCallSessionFactory, createConfiguredAcpSess
 const target = {id: 'test', command: process.execPath,
     args: [fileURLToPath(new URL('./fixtures/acp-agent.mjs', import.meta.url))]};
 
-test('built-in stdio adapter starts an agent relative to the configuration directory', {timeout: 10_000}, async () => {
+for (const adapterModule of [undefined, 'stdio']) {
+test(`built-in stdio adapter (${adapterModule ?? 'default'}) starts an agent relative to the configuration directory`, {timeout: 10_000}, async () => {
     const factory = createConfiguredAcpSessionFactory({
         baseDirectory: fileURLToPath(new URL('./fixtures/', import.meta.url)),
-        targets: [{id: 'builtin', adapterModule: 'stdio', command: process.execPath, args: ['acp-agent.mjs'], cwd: '.'}],
+        targets: [{id: 'builtin', adapterModule, command: process.execPath, args: ['acp-agent.mjs'], cwd: '.'}],
     });
     const session = await factory.open({target: {id: 'builtin'}});
     try {assert.equal(await session.prompt({text: 'hello'}), 'Turn 1.');}
     finally {await session.close();}
 });
+}
 
 test('stdio session preserves context across turns and after cancellation', {timeout: 10_000}, async () => {
     const session = await createAcpStdioSession({target});

@@ -3,63 +3,19 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111827">
-    <title>ACP Phone</title>
+    <title>ACP Phone contacts example</title>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <main class="call-screen">
-    <section id="contacts-view" class="contacts-view" aria-labelledby="contacts-heading">
+    <section class="contacts-view" aria-labelledby="contacts-heading">
         <p class="eyebrow">ACP PHONE</p>
         <h1 id="contacts-heading">Agents</h1>
         <p class="contacts-hint">Choose an agent to start a call.</p>
         <p id="contacts-status" class="status" role="status" aria-live="polite">Loading agents…</p>
         <div id="agent-list" class="agent-list"></div>
     </section>
-    <select id="target" aria-label="ACP agent target" hidden></select>
-    <section id="call-view" class="call-view" aria-label="Voice call" hidden>
-    <header class="call-header">
-        <p class="eyebrow">ACP PHONE</p>
-        <button id="target-profile" class="agent-profile" type="button" aria-label="Call selected agent">
-            <span id="avatar" class="avatar" aria-hidden="true">AI</span>
-        </button>
-        <h1 id="target-label">Choose an agent</h1>
-        <p id="call-timer" class="call-timer" aria-live="off">Ready to call</p>
-        <p id="status" class="status" role="status" aria-live="polite">Choose an agent to begin</p>
-    </header>
-
-    <section class="voice-stage" aria-label="Call activity">
-        <div class="voice-orbit" aria-hidden="true"><span></span><span></span><span></span></div>
-        <p id="voice-prompt">Start a call to speak with your agent.</p>
-    </section>
-
-    <section class="call-controls" aria-label="Call controls">
-        <button id="mute" class="control-button" type="button" disabled aria-pressed="false">
-            <span class="control-icon" aria-hidden="true">⌁</span>
-            <span id="mute-label">Mic off</span>
-        </button>
-        <button id="call" class="call-button" type="button" aria-pressed="false" disabled>
-            <span id="call-icon" aria-hidden="true">☎</span>
-            <span id="call-label">Call</span>
-        </button>
-        <button id="speaker" class="control-button active" type="button" disabled aria-pressed="true">
-            <span class="control-icon" aria-hidden="true">◖))</span>
-            <span>Speaker</span>
-        </button>
-    </section>
-
-    <section class="conversation" aria-labelledby="conversation-heading">
-        <div class="conversation-heading"><h2 id="conversation-heading">Call notes</h2><span>Private</span></div>
-        <dl>
-            <dt>You</dt>
-            <dd id="transcript-status">Text appears after your pause.</dd>
-            <dd id="transcript">—</dd>
-            <dt id="agent-name">Agent</dt>
-            <dd id="agent-text">—</dd>
-        </dl>
-    </section>
-    </section>
 </main>
-<script type="module" src="/app.js"></script>
+<script type="module" src="/contacts.js"></script>
 </body>
 </html>

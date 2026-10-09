@@ -19,7 +19,7 @@ export function createConfiguredAcpSessionFactory({targets, baseDirectory = proc
             const configuredTarget = targetsById.get(target.id);
             if (!configuredTarget) throw new TargetNotFoundError(target.id);
             const resolvedTarget = {...configuredTarget, cwd: resolve(baseDirectory, configuredTarget.cwd ?? '.')};
-            if (configuredTarget.adapterModule === 'stdio') {
+            if (configuredTarget.adapterModule === undefined || configuredTarget.adapterModule === 'stdio') {
                 return createAcpStdioSession({target: resolvedTarget, signal, sessionId});
             }
             if (!configuredTarget.adapterModule) {
