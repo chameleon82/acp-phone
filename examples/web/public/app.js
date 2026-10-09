@@ -1,4 +1,7 @@
 const screen = document.querySelector('.call-screen');
+const contactsView = document.querySelector('#contacts-view');
+const callView = document.querySelector('#call-view');
+const contactsStatus = document.querySelector('#contacts-status');
 const callButton = document.querySelector('#call');
 const callLabel = document.querySelector('#call-label');
 const callIcon = document.querySelector('#call-icon');
@@ -6,6 +9,7 @@ const muteButton = document.querySelector('#mute');
 const muteLabel = document.querySelector('#mute-label');
 const speakerButton = document.querySelector('#speaker');
 const targetSelect = document.querySelector('#target');
+const agentList = document.querySelector('#agent-list');
 const targetProfile = document.querySelector('#target-profile');
 const targetLabel = document.querySelector('#target-label');
 const agentName = document.querySelector('#agent-name');
@@ -50,6 +54,13 @@ let activeRequest;
 let candidateRequest;
 let greetingRequest;
 let awaitingAgent = false;
+let hangupTimer;
+let hangupContext;
+let ringingTimer;
+let ringingInterval;
+let ringingContext;
+let pickupTimer;
+let finishPickupWait;
 let previousGreeting = '';
 let currentAudio;
 let audioQueue = [];
@@ -75,7 +86,7 @@ let thinkingAudio;
 let previousThinkingPhrase = '';
 
 await loadTargets();
-callButton.addEventListener('click', () => state === 'ready' ? startCall() : endCall());
+callButton.addEventListener('click', () => state === 'ready' ? startCall() : endCall({animate: true}));
 window.addEventListener('pagehide', () => endCall({release: false}));
 window.addEventListener('online', () => {
     if (state === 'reconnecting') {
@@ -90,7 +101,7 @@ targetSelect.addEventListener('change', () => {
     renderTarget();
 });
 targetProfile.addEventListener('click', () => {
-    if (state === 'ready') targetSelect.focus();
+    if (state === 'ready') void startCall();
 });
 
 async function loadTargets() {
@@ -100,19 +111,52 @@ async function loadTargets() {
         const {targets} = await response.json();
         for (const target of targets) targetSelect.add(new Option(target.label, target.id));
         if (!targets.length) throw new Error('No ACP targets are configured.');
+        renderAgentList(targets);
         try {
             const selected = localStorage.getItem(TARGET_STORAGE_KEY);
             if (targets.some((target) => target.id === selected)) targetSelect.value = selected;
         } catch {}
         renderTarget();
-        setState('ready', 'Ready to call', 'Tap Call, then simply speak naturally.');
+        setState('ready', 'Ready to call', 'Choose an agent to start a call.');
     } catch (error) {
         setState('error', error.message, 'Configure an ACP target, then try again.');
     }
 }
 
+function renderAgentList(targets) {
+    agentList.replaceChildren();
+    for (const target of targets) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'agent-contact';
+        const icon = document.createElement('span');
+        icon.className = 'contact-avatar';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = target.label.split(/\s+/).map(word => word[0]).join('').slice(0, 2).toUpperCase();
+        const name = document.createElement('span');
+        name.className = 'contact-name';
+        name.textContent = target.label;
+        const action = document.createElement('span');
+        action.className = 'contact-action';
+        action.textContent = 'Call';
+        button.append(icon, name, action);
+        button.addEventListener('click', () => callAgent(target.id));
+        agentList.append(button);
+    }
+}
+
+async function callAgent(id) {
+    if (state !== 'ready') return;
+    targetSelect.value = id;
+    try {localStorage.setItem(TARGET_STORAGE_KEY, id);} catch {}
+    renderTarget();
+    await startCall();
+}
+
 async function startCall() {
     const generation = ++callGeneration;
+    const dialingStartedAt = Date.now();
+    startRinging(generation);
     const savedCall = conversations[targetSelect.value];
     callId = typeof savedCall === "string" && savedCall.length > 0 && savedCall.length <= 128
         ? savedCall : crypto.randomUUID();
@@ -147,6 +191,9 @@ async function startCall() {
         connected = true;
         await openMicrophone(generation);
         if (generation !== callGeneration) return;
+        await waitForPickup(dialingStartedAt);
+        if (generation !== callGeneration) return;
+        stopRinging();
         setState('connected', 'Connected · listening', 'Speak normally. Your turn sends automatically after a short pause.');
         monitorVoice();
         void startLiveTranscription();
@@ -161,6 +208,19 @@ async function startCall() {
     } finally {
         if (activeRequest === request) activeRequest = undefined;
     }
+}
+
+function waitForPickup(startedAt) {
+    const remaining = Math.max(0, 2000 - (Date.now() - startedAt));
+    if (!remaining) return Promise.resolve();
+    return new Promise(resolve => {
+        finishPickupWait = resolve;
+        pickupTimer = setTimeout(() => {
+            pickupTimer = undefined;
+            finishPickupWait = undefined;
+            resolve();
+        }, remaining);
+    });
 }
 
 async function playGreeting(generation) {
@@ -178,16 +238,29 @@ async function playGreeting(generation) {
             || !speakerEnabled || recorder || candidateRequest || state === 'ready' || state === 'reconnecting') return;
         agentText.textContent = event.text;
         previousGreeting = event.text;
+        stopRinging();
         enqueueAudio(event);
         setState('playing', 'Connected · agent is speaking', 'Speak whenever you are ready.');
     } catch {
         // Greeting failures must not prevent a connected call from continuing.
     } finally {
-        if (greetingRequest === request) greetingRequest = undefined;
+        if (greetingRequest === request) {
+            greetingRequest = undefined;
+            stopRinging();
+        }
     }
 }
 
-function endCall({release = true} = {}) {
+function endCall({release = true, animate = false} = {}) {
+    clearTimeout(pickupTimer);
+    pickupTimer = undefined;
+    finishPickupWait?.();
+    finishPickupWait = undefined;
+    stopRinging();
+    clearTimeout(hangupTimer);
+    hangupTimer = undefined;
+    hangupContext?.close();
+    hangupContext = undefined;
     if (callId && release) {
         void fetch(`/api/calls/${encodeURIComponent(targetSelect.value)}/${encodeURIComponent(callId)}`, {
             method: 'DELETE', keepalive: true,
@@ -228,6 +301,89 @@ function endCall({release = true} = {}) {
     speakerButton.disabled = true;
     callTimer.textContent = 'Call ended';
     setState('ready', 'Ready to call', 'Tap Call to continue this conversation.');
+    if (animate) {
+        const generation = callGeneration;
+        setState('ending', 'Call ended', 'The call has ended.');
+        callLabel.textContent = 'Ended';
+        hangupTimer = setTimeout(() => {
+            if (generation !== callGeneration) return;
+            hangupTimer = undefined;
+            hangupContext?.close();
+            hangupContext = undefined;
+            setState('ready', 'Ready to call', 'Choose an agent to start a call.');
+        }, 2000);
+        if (speakerEnabled) void playHangupSound(generation);
+    }
+}
+
+function startRinging(generation) {
+    stopRinging();
+    if (!speakerEnabled) return;
+    try {
+        const context = new AudioContext();
+        ringingContext = context;
+        void context.resume().catch(() => {});
+        const ring = () => {
+            if (generation !== callGeneration || ringingContext !== context) return;
+            try {
+                const start = context.currentTime + 0.02;
+                for (const offset of [0, 0.3]) {
+                    for (const frequency of [440, 480]) {
+                        const oscillator = context.createOscillator();
+                        const gain = context.createGain();
+                        oscillator.frequency.value = frequency;
+                        gain.gain.setValueAtTime(0, start + offset);
+                        gain.gain.linearRampToValueAtTime(0.04, start + offset + 0.015);
+                        gain.gain.linearRampToValueAtTime(0, start + offset + 0.2);
+                        oscillator.connect(gain).connect(context.destination);
+                        oscillator.start(start + offset);
+                        oscillator.stop(start + offset + 0.22);
+                        oscillator.addEventListener('ended', () => {oscillator.disconnect(); gain.disconnect();}, {once: true});
+                    }
+                }
+            } catch {stopRinging();}
+        };
+        ringingTimer = setTimeout(() => {
+            ringingTimer = undefined;
+            if (generation !== callGeneration || ringingContext !== context) return;
+            ring();
+            if (ringingContext === context) ringingInterval = setInterval(ring, 2200);
+        }, 1000);
+    } catch {stopRinging();}
+}
+
+function stopRinging() {
+    clearTimeout(ringingTimer);
+    clearInterval(ringingInterval);
+    ringingTimer = undefined;
+    ringingInterval = undefined;
+    ringingContext?.close();
+    ringingContext = undefined;
+}
+
+async function playHangupSound(generation) {
+    try {
+        const context = new AudioContext();
+        hangupContext = context;
+        await context.resume();
+        if (generation !== callGeneration || state !== 'ending') {await context.close(); return;}
+        const start = context.currentTime + 0.02;
+        for (const [offset, frequency] of [[0, 440], [0.32, 330], [0.64, 220]]) {
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.value = frequency;
+            gain.gain.setValueAtTime(0, start + offset);
+            gain.gain.linearRampToValueAtTime(0.12, start + offset + 0.015);
+            gain.gain.linearRampToValueAtTime(0, start + offset + 0.26);
+            oscillator.connect(gain).connect(context.destination);
+            oscillator.start(start + offset);
+            oscillator.stop(start + offset + 0.28);
+            oscillator.addEventListener('ended', () => {oscillator.disconnect(); gain.disconnect();}, {once: true});
+        }
+    } catch {
+        // Visual confirmation still completes if audio output is unavailable.
+    }
 }
 
 function toggleMicrophone() {
@@ -247,7 +403,7 @@ function toggleMicrophone() {
 
 function toggleSpeaker() {
     speakerEnabled = !speakerEnabled;
-    if (!speakerEnabled) stopThinkingNotice();
+    if (!speakerEnabled) {stopThinkingNotice(); stopRinging();}
     if (currentAudio) {
         currentAudio.muted = !speakerEnabled;
         if (speakerEnabled) {
@@ -324,6 +480,7 @@ function monitorVoice() {
 
 function beginUtterance() {
     if (!recordingStream || muted || recorder) return;
+    stopRinging();
     greetingRequest?.abort();
     greetingRequest = undefined;
     candidateRequest?.abort();
@@ -535,12 +692,14 @@ function handleStreamEvent(event) {
     }
     if (event.type === 'agent.text.delta') {
         if (event.delta?.trim()) {
+            stopRinging();
             stopThinkingNotice();
             if (awaitingAgent && activeRequest) startThinkingNotice(25000);
         }
         agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
     }
     if (event.type === 'tts.audio') {
+        stopRinging();
         stopThinkingNotice();
         enqueueAudio(event);
         setState('playing', 'Agent is speaking', 'You can interrupt naturally by speaking.');
@@ -987,14 +1146,18 @@ function setState(nextState, statusMessage, prompt) {
     status.textContent = statusMessage;
     voicePrompt.textContent = prompt;
     const inCall = !['loading', 'ready', 'error'].includes(nextState);
+    contactsView.hidden = inCall;
+    callView.hidden = !inCall;
+    contactsStatus.textContent = inCall ? '' : statusMessage;
+    screen.classList.toggle('in-call', inCall);
     screen.classList.toggle('recording', nextState === 'recording');
     screen.classList.toggle('playing', nextState === 'playing');
     screen.classList.toggle('thinking', nextState === 'thinking');
     callButton.classList.toggle('recording', nextState === 'recording');
-    callButton.disabled = nextState === 'loading' || nextState === 'error';
+    callButton.disabled = ['loading', 'error', 'ending'].includes(nextState);
     callButton.setAttribute('aria-pressed', String(inCall));
-    muteButton.disabled = !inCall || nextState === 'connecting';
-    speakerButton.disabled = !inCall || nextState === 'connecting';
+    muteButton.disabled = !inCall || ['connecting', 'ending'].includes(nextState);
+    speakerButton.disabled = !inCall || ['connecting', 'ending'].includes(nextState);
     targetSelect.disabled = inCall;
     targetProfile.disabled = inCall;
 }

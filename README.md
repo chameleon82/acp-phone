@@ -24,6 +24,12 @@ The streaming path reads PCM directly from the Speech API response through the c
 
 Each manually connected call generates a fresh natural Russian greeting of one or two words, then synthesizes it through the configured gateway and existing audio queue. The previous greeting is supplied to encourage variation. Reconnects do not repeat it. The greeting does not create an ACP turn and is discarded if the caller starts speaking before it arrives or the call ends.
 
+A separate contacts screen lists configured ACP agents. Clicking a contact selects that agent, saves the selection, and immediately starts its call. A dedicated call screen contains the avatar, call activity, audio controls, and Call Notes. Hangup returns to contacts; automatic reconnect stays on the call screen.
+
+Dialing lasts at least two seconds, even when connection setup succeeds immediately. After one second, a local outgoing ring repeats until the session and microphone are ready. It stops at connection success, before greeting generation finishes.
+
+Pressing End releases the microphone and cancels the agent immediately, plays a short local descending tone when the speaker is enabled, and keeps the ended call visible for two seconds before returning to contacts. Page cleanup and connection failures skip this confirmation.
+
 Recordings with an empty transcript, punctuation only, or an explicit noise/silence annotation are skipped before ACP is opened. The stream ends with `turn.skipped`, and the browser quietly resumes listening without generating an agent reply.
 
 Microphone activation keeps the current agent reply playing. During an interruption, the browser transcribes an initial 800 ms preview and, if needed, a second 1.2 second preview through the configured gateway. Recognized words cancel the previous reply while recording continues; empty/noise previews keep it playing. Only the completed caller message starts the next ACP turn. Interruption timing depends on gateway transcription latency; unsupported microphone preview capture falls back to final transcription.

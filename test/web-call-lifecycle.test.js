@@ -11,11 +11,14 @@ function browser(overrides = {}) {
     const timeouts = new Map();
     let timeoutId = 0;
     const element = () => ({
+        children: [], listeners: {},
         textContent: '—', classList: {add() {}, remove() {}, toggle() {}},
-        setAttribute() {}, addEventListener() {}, disabled: false,
+        setAttribute() {}, addEventListener(type, listener) {this.listeners[type] = listener;}, disabled: false,
+        append(...children) {this.children.push(...children);},
+        replaceChildren(...children) {this.children = children;},
     });
     const context = vm.createContext({
-        document: {querySelector: (selector) => {
+        document: {createElement: element, querySelector: (selector) => {
             if (!elements.has(selector)) elements.set(selector, element());
             return elements.get(selector);
         }},
@@ -41,7 +44,11 @@ function browser(overrides = {}) {
         ...overrides,
     });
     vm.runInContext(source, context);
+    // Ordinary lifecycle tests skip the cosmetic dialing delay.
+    const waitForPickup = vm.runInContext('waitForPickup', context);
+    vm.runInContext('waitForPickup = async () => {};', context);
     return {context, elements, timeouts, run: (code) => vm.runInContext(code, context),
+        waitForPickup,
         async retry() {
             const [id, {callback}] = timeouts.entries().next().value;
             timeouts.delete(id);
@@ -57,6 +64,114 @@ test('microphone denial resets controls and permits another call', async () => {
     assert.equal(page.elements.get('#call').disabled, false);
     assert.equal(page.elements.get('#mute').disabled, true);
     assert.match(page.elements.get('#status').textContent, /Permission denied/);
+});
+
+test('agent list buttons immediately call the chosen agent and save the selection', async () => {
+    const saved = [];
+    const page = browser({localStorage: {getItem: () => null, setItem(key, value) {saved.push([key, value]);}}});
+    const target = page.elements.get('#target');
+    target.selectedOptions = [{textContent: 'Agent B'}];
+    page.run("state = 'ready'; let dialed; startCall = async () => {dialed = targetSelect.value; state = 'connecting';}; renderAgentList([{id: 'a', label: 'Agent A'}, {id: 'b', label: 'Agent B'}]);");
+    const buttons = page.elements.get('#agent-list').children;
+    assert.equal(buttons.length, 2);
+    assert.equal(buttons[1].children[1].textContent, 'Agent B');
+    await buttons[1].listeners.click();
+    assert.equal(page.run('dialed'), 'b');
+    assert.deepEqual(saved, [['acp-phone.target', 'b']]);
+    await buttons[0].listeners.click();
+    assert.equal(page.run('dialed'), 'b');
+});
+
+test('contacts and call are separate views during connect, reconnect, and hangup', () => {
+    const page = browser();
+    for (const state of ['ready', 'loading', 'error']) {
+        page.context.nextState = state;
+        page.run("setState(nextState, 'Choose an agent', '');");
+        assert.equal(page.elements.get('#contacts-view').hidden, false);
+        assert.equal(page.elements.get('#call-view').hidden, true);
+    }
+    for (const state of ['connecting', 'connected', 'recording', 'playing', 'reconnecting']) {
+        page.context.nextState = state;
+        page.run("setState(nextState, 'Connected', '');");
+        assert.equal(page.elements.get('#contacts-view').hidden, true);
+        assert.equal(page.elements.get('#call-view').hidden, false);
+    }
+    page.run('endCall({release: false})');
+    assert.equal(page.elements.get('#contacts-view').hidden, false);
+    assert.equal(page.elements.get('#call-view').hidden, true);
+});
+
+test('user hangup releases the microphone immediately and plays a tone before returning to contacts', async () => {
+    const tones = [];
+    let micStopped = false;
+    let soundClosed = false;
+    const page = browser({AudioContext: class {
+        currentTime = 10;
+        async resume() {}
+        async close() {soundClosed = true;}
+        createOscillator() {
+            const tone = {frequency: {}, connect: () => ({connect() {}}), start(time) {this.startTime = time;},
+                stop(time) {this.stopTime = time;}, addEventListener() {}, disconnect() {}};
+            tones.push(tone);
+            return tone;
+        }
+        createGain() {return {gain: {setValueAtTime() {}, linearRampToValueAtTime() {}}, disconnect() {}};}
+    }});
+    page.context.micTrack = {stop() {micStopped = true;}};
+    page.run("state = 'connected'; microphone = {getTracks: () => [micTrack]}; endCall({release: false, animate: true});");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(micStopped, true);
+    assert.equal(page.run('state'), 'ending');
+    assert.equal(page.elements.get('#call-view').hidden, false);
+    assert.equal(page.elements.get('#call').disabled, true);
+    assert.equal([...page.timeouts.values()][0].delay, 2000);
+    assert.deepEqual(tones.map(tone => tone.frequency.value), [440, 330, 220]);
+    assert.ok(tones.every(tone => tone.stopTime > tone.startTime));
+    await page.retry();
+    assert.equal(page.run('state'), 'ready');
+    assert.equal(page.elements.get('#contacts-view').hidden, false);
+    assert.equal(soundClosed, true);
+});
+
+test('page cleanup cancels the hangup confirmation timer without another sound', () => {
+    const page = browser();
+    page.run("state = 'connected'; speakerEnabled = false; endCall({release: false, animate: true});");
+    assert.equal(page.timeouts.size, 1);
+    page.run('endCall({release: false})');
+    assert.equal(page.timeouts.size, 0);
+    assert.equal(page.run('state'), 'ready');
+});
+
+test('outgoing ring stops when connection succeeds before greeting preparation finishes', async () => {
+    let closed = 0;
+    const page = browser({AudioContext: class {
+        async resume() {}
+        async close() {closed++;}
+    }, fetch: async () => ({ok: true})});
+    page.run("state = 'ready'; openMicrophone = async () => {}; monitorVoice = () => {}; startLiveTranscription = async () => {}; playGreeting = async () => {}; checkConnection = async () => {};");
+    await page.run('startCall()');
+    assert.equal(page.run('state'), 'connected');
+    assert.equal(page.run('ringingContext'), undefined);
+    assert.equal(page.timeouts.size, 0);
+    assert.equal(closed, 1);
+});
+
+test('fast connections remain dialing for two seconds and hangup cancels the wait', async () => {
+    for (const cancel of [false, true]) {
+        const page = browser({Date: {now: () => 100}, fetch: async () => ({ok: true})});
+        page.context.realPickupWait = page.waitForPickup;
+        page.run("state = 'ready'; waitForPickup = realPickupWait; openMicrophone = async () => {}; monitorVoice = () => {}; startLiveTranscription = async () => {}; playGreeting = async () => {}; checkConnection = async () => {};");
+        const connecting = page.run('startCall()');
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(page.run('state'), 'connecting');
+        const [id, timer] = [...page.timeouts.entries()].find(([, item]) => item.delay === 2000);
+        assert.equal(timer.delay, 2000);
+        if (cancel) page.run('endCall({release: false})');
+        else {page.timeouts.delete(id); timer.callback();}
+        await connecting;
+        assert.equal(page.run('state'), cancel ? 'ready' : 'connected');
+        assert.equal(page.timeouts.size, 0);
+    }
 });
 
 test('a connected call plays its greeting through the existing audio queue', async () => {

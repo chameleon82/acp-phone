@@ -9,21 +9,24 @@
 </head>
 <body>
 <main class="call-screen">
+    <section id="contacts-view" class="contacts-view" aria-labelledby="contacts-heading">
+        <p class="eyebrow">ACP PHONE</p>
+        <h1 id="contacts-heading">Agents</h1>
+        <p class="contacts-hint">Choose an agent to start a call.</p>
+        <p id="contacts-status" class="status" role="status" aria-live="polite">Loading agents…</p>
+        <div id="agent-list" class="agent-list"></div>
+    </section>
+    <select id="target" aria-label="ACP agent target" hidden></select>
+    <section id="call-view" class="call-view" aria-label="Voice call" hidden>
     <header class="call-header">
         <p class="eyebrow">ACP PHONE</p>
-        <button id="target-profile" class="agent-profile" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <button id="target-profile" class="agent-profile" type="button" aria-label="Call selected agent">
             <span id="avatar" class="avatar" aria-hidden="true">AI</span>
-            <span class="sr-only">Choose agent</span>
         </button>
         <h1 id="target-label">Choose an agent</h1>
         <p id="call-timer" class="call-timer" aria-live="off">Ready to call</p>
         <p id="status" class="status" role="status" aria-live="polite">Choose an agent to begin</p>
     </header>
-
-    <section class="target-sheet" aria-label="Agent selection">
-        <label class="target-picker" for="target">Calling</label>
-        <select id="target" aria-label="ACP agent target"></select>
-    </section>
 
     <section class="voice-stage" aria-label="Call activity">
         <div class="voice-orbit" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -54,6 +57,7 @@
             <dt id="agent-name">Agent</dt>
             <dd id="agent-text">—</dd>
         </dl>
+    </section>
     </section>
 </main>
 <script type="module" src="/app.js"></script>
