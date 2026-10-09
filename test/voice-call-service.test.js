@@ -25,6 +25,26 @@ test('speech adapters require the configured gateway instead of using a default 
     assert.throws(() => createOpenAiSpeechAdapters({apiKey: 'test-key'}), /gateway baseURL is required/);
 });
 
+test('greetings are generated through the gateway using the previous greeting as context', async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        assert.equal(String(url), 'https://configured-gateway.example/v1/responses');
+        requests.push(JSON.parse(options.body));
+        return new Response(JSON.stringify({id: 'greeting', output_text: requests.length === 1 ? 'Алло?' : 'Привет!', output: [{type: 'message', role: 'assistant',
+            content: [{type: 'output_text', text: requests.length === 1 ? 'Алло?' : 'Привет!'}]}]}),
+            {headers: {'Content-Type': 'application/json'}});
+    };
+    try {
+        const adapters = createOpenAiSpeechAdapters({apiKey: 'gateway-key', baseURL: 'https://configured-gateway.example/v1'});
+        const first = await adapters.greetingPresenter.present({previous: ''});
+        const second = await adapters.greetingPresenter.present({previous: first});
+        assert.equal(first, 'Алло?');
+        assert.equal(second, 'Привет!');
+        assert.equal(JSON.parse(requests[1].input).previousGreeting, first);
+    } finally {globalThis.fetch = originalFetch;}
+});
+
 test('transcription requests use the configured gateway and existing API key', async () => {
     const originalFetch = globalThis.fetch;
     const requests = [];

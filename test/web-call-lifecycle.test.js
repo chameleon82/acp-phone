@@ -59,6 +59,41 @@ test('microphone denial resets controls and permits another call', async () => {
     assert.match(page.elements.get('#status').textContent, /Permission denied/);
 });
 
+test('a connected call plays its greeting through the existing audio queue', async () => {
+    const queued = [];
+    const page = browser({fetch: async url => {
+        assert.equal(url, '/api/greeting-audio');
+        return {ok: true, async json() {return {text: 'Да?', contentType: 'audio/mpeg', audioBase64: 'YQ=='};}};
+    }});
+    page.context.queued = queued;
+    page.run("state = 'connected'; enqueueAudio = event => queued.push(event);");
+    await page.run('playGreeting(callGeneration)');
+    assert.equal(queued.length, 1);
+    assert.equal(page.elements.get('#agent-text').textContent, 'Да?');
+    assert.equal(page.run('state'), 'playing');
+});
+
+test('a late greeting is discarded after hangup or recognized interruption', async () => {
+    for (const cancel of ['endCall({release: false})', 'cancelAgentReply()']) {
+        let respond;
+        const page = browser({fetch: () => new Promise(resolve => {respond = resolve;})});
+        page.run("state = 'connected'; enqueueAudio = () => {throw new Error('Late greeting must not play');};");
+        const greeting = page.run('playGreeting(callGeneration)');
+        page.run(cancel);
+        respond({ok: true, async json() {return {text: 'Алло!', audioBase64: 'YQ=='};}});
+        await greeting;
+        assert.equal(page.elements.get('#agent-text').textContent, '—');
+        assert.equal(page.run('greetingRequest'), undefined);
+    }
+});
+
+test('greeting failure leaves the connected call usable', async () => {
+    const page = browser({fetch: async () => {throw new Error('Gateway unavailable');}});
+    page.run("state = 'connected';");
+    await page.run('playGreeting(callGeneration)');
+    assert.equal(page.run('state'), 'connected');
+});
+
 test('ending a call while microphone permission is pending releases the late stream', async () => {
     let grant;
     let permissionRequested;
@@ -511,6 +546,32 @@ test('whitespace agent chunks keep the waiting timer until meaningful text arriv
     page.run("handleStreamEvent({type: 'agent.text.delta', delta: 'Ответ'})");
     assert.equal(page.timeouts.size, 0);
 });
+
+test('long tasks schedule infrequent follow-up cues until completion', async () => {
+    let requests = 0;
+    const page = browser({fetch: async () => {requests++; return new Response('');}});
+    page.run("state = 'thinking'; audioContext = {async resume() {}}; activeRequest = new AbortController(); awaitingAgent = true; startThinkingNotice();");
+    await page.retry();
+    assert.equal(requests, 1);
+    assert.equal([...page.timeouts.values()][0].delay, 25000);
+    await page.retry();
+    assert.equal(requests, 2);
+    page.run("handleStreamEvent({type: 'agent.text.delta', delta: 'Проверяю сервер.'})");
+    assert.equal([...page.timeouts.values()][0].delay, 25000);
+    page.run("handleStreamEvent({type: 'turn.completed', agentText: 'Готово.'})");
+    assert.equal(page.timeouts.size, 0);
+    assert.equal(page.run('awaitingAgent'), false);
+});
+
+test('follow-up cues do not overlap agent audio and cancellation clears their timer', async () => {
+    const page = browser({fetch: async () => {assert.fail('No cue over playback');}});
+    page.run("state = 'playing'; audioContext = {}; activeRequest = new AbortController(); awaitingAgent = true; playingQueue = true; startThinkingNotice(25000);");
+    await page.retry();
+    assert.equal([...page.timeouts.values()][0].delay, 25000);
+    page.run('cancelAgentReply()');
+    assert.equal(page.timeouts.size, 0);
+});
+
 
 test('a noise-only recording ends normally and returns to listening without a waiting cue', async () => {
     const page = browser();

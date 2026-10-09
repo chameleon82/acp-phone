@@ -27,14 +27,23 @@ test('cancellation after phrase generation prevents synthesis', async () => {
     await assert.rejects(getAudio({signal: controller.signal}), {name: 'AbortError'});
 });
 
-test('empty or excessive generated phrases are discarded', async () => {
-    for (const text of ['', 'x'.repeat(181)]) {
+test('excessive generated phrases are discarded', async () => {
+    for (const text of ['x'.repeat(181)]) {
         const getAudio = createThinkingAudio({
             async present() {return text;},
             async synthesize() {assert.fail('Invalid cue must not synthesize');},
         });
         await assert.rejects(getAudio({}), /Invalid waiting acknowledgement/);
     }
+});
+
+test('a model decision to omit a cue does not synthesize or send audio', async () => {
+    const getAudio = createThinkingAudio({
+        async present({transcript}) {assert.equal(transcript, 'Привет'); return '';},
+        async synthesize() {assert.fail('An omitted cue must not synthesize');},
+        async *synthesizeStream() {assert.fail('An omitted cue must not synthesize');},
+    });
+    assert.equal(await getAudio({transcript: 'Привет', onAudio() {assert.fail('No cue audio expected');}}), undefined);
 });
 
 test('waiting audio forwards the first PCM packet before synthesis completes', async () => {

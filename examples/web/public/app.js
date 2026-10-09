@@ -48,6 +48,9 @@ let muted = false;
 let speakerEnabled = true;
 let activeRequest;
 let candidateRequest;
+let greetingRequest;
+let awaitingAgent = false;
+let previousGreeting = '';
 let currentAudio;
 let audioQueue = [];
 let playingQueue = false;
@@ -147,6 +150,7 @@ async function startCall() {
         setState('connected', 'Connected · listening', 'Speak normally. Your turn sends automatically after a short pause.');
         monitorVoice();
         void startLiveTranscription();
+        void playGreeting(generation);
         healthTimer = setInterval(() => { void checkConnection(); }, 5000);
         void checkConnection();
     } catch (error) {
@@ -156,6 +160,30 @@ async function startCall() {
             'Tap Call to retry this conversation.');
     } finally {
         if (activeRequest === request) activeRequest = undefined;
+    }
+}
+
+async function playGreeting(generation) {
+    if (!speakerEnabled || state === 'ready' || state === 'reconnecting') return;
+    const request = new AbortController();
+    greetingRequest = request;
+    const replyGeneration = playbackGeneration;
+    try {
+        const response = await fetch('/api/greeting-audio', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({previous: previousGreeting}),
+            signal: request.signal});
+        if (!response.ok) return;
+        const event = await response.json();
+        if (request.signal.aborted || generation !== callGeneration || replyGeneration !== playbackGeneration
+            || !speakerEnabled || recorder || candidateRequest || state === 'ready' || state === 'reconnecting') return;
+        agentText.textContent = event.text;
+        previousGreeting = event.text;
+        enqueueAudio(event);
+        setState('playing', 'Connected · agent is speaking', 'Speak whenever you are ready.');
+    } catch {
+        // Greeting failures must not prevent a connected call from continuing.
+    } finally {
+        if (greetingRequest === request) greetingRequest = undefined;
     }
 }
 
@@ -296,6 +324,8 @@ function monitorVoice() {
 
 function beginUtterance() {
     if (!recordingStream || muted || recorder) return;
+    greetingRequest?.abort();
+    greetingRequest = undefined;
     candidateRequest?.abort();
     candidateRequest = undefined;
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined;
@@ -365,6 +395,7 @@ async function sendUtterance(chunks, mimeType) {
                 cancelAgentReply({preserveCandidate: true});
                 candidateRequest = undefined;
                 activeRequest = request;
+                awaitingAgent = true;
                 agentText.textContent = '—';
                 setState('thinking', 'Thinking…', 'The agent is responding.');
                 startThinkingNotice();
@@ -391,6 +422,7 @@ async function sendUtterance(chunks, mimeType) {
     } finally {
         if (candidateRequest === request) candidateRequest = undefined;
         if (activeRequest === request) {
+            awaitingAgent = false;
             stopThinkingNotice();
             activeRequest = undefined;
         }
@@ -496,30 +528,41 @@ function handleStreamEvent(event) {
         transcript.textContent = event.transcript;
     }
     if (event.type === 'turn.completed') {
+        awaitingAgent = false;
         stopThinkingNotice();
         agentText.textContent = event.agentText;
         void pcmPlayback?.flush().catch(() => cancelAgentReply());
     }
     if (event.type === 'agent.text.delta') {
-        if (event.delta?.trim()) stopThinkingNotice();
+        if (event.delta?.trim()) {
+            stopThinkingNotice();
+            if (awaitingAgent && activeRequest) startThinkingNotice(25000);
+        }
         agentText.textContent = `${agentText.textContent === '—' ? '' : agentText.textContent}${event.delta}`;
     }
     if (event.type === 'tts.audio') {
         stopThinkingNotice();
         enqueueAudio(event);
         setState('playing', 'Agent is speaking', 'You can interrupt naturally by speaking.');
+        if (awaitingAgent && activeRequest) startThinkingNotice(25000);
     }
     if (event.type === 'error') throw Object.assign(new Error(event.message), {
         retryable: event.code === 'ACP_PROCESS_FAILED',
     });
 }
 
-function startThinkingNotice() {
-    stopThinkingNotice();
+function startThinkingNotice(delay = 1000, preserveCue = false) {
+    if (preserveCue) clearTimeout(thinkingTimer);
+    else stopThinkingNotice();
     const generation = playbackGeneration;
     thinkingTimer = setTimeout(async () => {
         thinkingTimer = undefined;
-        if (generation !== playbackGeneration || !speakerEnabled || state !== 'thinking' || !audioContext) return;
+        if (generation !== playbackGeneration || !speakerEnabled || !audioContext
+            || ['ready', 'reconnecting', 'recording'].includes(state)) return;
+        if (playingQueue) {
+            if (awaitingAgent && activeRequest) startThinkingNotice(25000);
+            return;
+        }
         const message = transcriptFinalized ? transcript.textContent : '';
         const language = /[а-яё]/i.test(message) || navigator.language?.startsWith('ru') ? 'ru' : 'en';
         const request = new AbortController();
@@ -529,7 +572,7 @@ function startThinkingNotice() {
             const response = await fetch('/api/thinking-audio', {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, signal: request.signal,
                 body: JSON.stringify({transcript: message.slice(0, 1000),
-                    draft: agentText.textContent === '—' ? '' : agentText.textContent.slice(0, 500),
+                    draft: agentText.textContent === '—' ? '' : agentText.textContent.slice(-500),
                     previous: previousThinkingPhrase, language}),
             });
             if (!response.ok) return;
@@ -559,9 +602,13 @@ function startThinkingNotice() {
             cue?.pause();
         } finally {
             if (thinkingRequest === request) thinkingRequest = undefined;
+            if (!request.signal.aborted && generation === playbackGeneration && awaitingAgent && activeRequest) {
+                startThinkingNotice(25000, true);
+            }
         }
-    }, 1000);
+    }, delay);
 }
+
 
 function stopThinkingNotice() {
     clearTimeout(thinkingTimer);
@@ -886,6 +933,9 @@ async function createVoicePlayback(event, context) {
 }
 
 function cancelAgentReply({preserveCandidate = false} = {}) {
+    awaitingAgent = false;
+    greetingRequest?.abort();
+    greetingRequest = undefined;
     if (!preserveCandidate) {
         candidateRequest?.abort();
         candidateRequest = undefined;

@@ -47,6 +47,20 @@ const voiceCallService = new VoiceCallService({
 });
 
 const app = express();
+app.post('/api/greeting-audio', express.json({limit: '1kb'}), async (request, response, next) => {
+    const controller = new AbortController();
+    response.once('close', () => {if (!response.writableEnded) controller.abort();});
+    try {
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+        const previous = typeof request.body?.previous === 'string' ? request.body.previous.slice(0, 30) : '';
+        const text = await speechAdapters.greetingPresenter.present({previous, signal});
+        signal.throwIfAborted();
+        const audio = await speechAdapters.textToSpeech.synthesize({text, signal});
+        if (!controller.signal.aborted) response.set('Cache-Control', 'no-store').json({
+            text, contentType: audio.contentType, audioBase64: audio.bytes.toString('base64'),
+        });
+    } catch (error) {if (!controller.signal.aborted) next(error);}
+});
 const thinkingAudio = createThinkingAudio({
     present: speechAdapters.waitingPresenter.present,
     synthesize: speechAdapters.textToSpeech.synthesize,

@@ -1,7 +1,8 @@
 export function createThinkingAudio({present, synthesize, synthesizeStream}) {
     return async ({transcript = '', draft = '', previous = '', language = 'en', signal, onAudio}) => {
         const text = (await present({transcript, draft, previous, language, signal}))?.trim();
-        if (!text || text.length > 180) throw new Error('Invalid waiting acknowledgement.');
+        if (!text) return;
+        if (text.length > 180) throw new Error('Invalid waiting acknowledgement.');
         signal?.throwIfAborted();
         if (synthesizeStream && onAudio) {
             let first = true;
