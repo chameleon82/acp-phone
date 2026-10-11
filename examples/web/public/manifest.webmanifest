@@ -1,0 +1,16 @@
+{
+  "id": "./",
+  "name": "ACP Phone",
+  "short_name": "ACP Phone",
+  "description": "Voice calls with your ACP agents",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#0b141a",
+  "theme_color": "#0b141a",
+  "icons": [
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

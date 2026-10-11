@@ -88,6 +88,10 @@ export function createAcpPhone({baseUrl = window.location.origin, skin = 'defaul
             let fullscreenRequested = false;
             const requestCallFullscreen = () => {
                 if (finished || closingTimer || fullscreenRequested) return;
+                if (window.matchMedia?.('(display-mode: fullscreen)').matches) {
+                    recordFullscreen('installed-fullscreen');
+                    return;
+                }
                 if (!(callFullscreen === true || (callFullscreen === 'auto' && mobile))) {
                     recordFullscreen('not-requested');
                     return;

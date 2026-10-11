@@ -174,6 +174,8 @@ try {
         document.querySelector('#fullscreen-result').textContent = last.error || ({
             'API-unavailable': 'Браузер не предоставляет Fullscreen API.',
             'not-requested': 'Запрос полного экрана не выполнялся.',
+            'installed-fullscreen': 'Приложение запущено в установленном полноэкранном режиме.',
+            'waiting-for-audio': 'Ожидается подготовка звука перед запросом полного экрана.',
             'requesting': 'Запрос отправлен, результат ещё не получен.',
             'entered-fullscreen': 'Браузер сообщил о включении полного экрана.',
             'left-fullscreen': 'Браузер вышел из полного экрана во время звонка.',

@@ -142,6 +142,7 @@ function exitCallFullscreen() {
 
 function requestCallFullscreen(generation) {
     if (hostChannel) return; // The host requests fullscreen within the contact click.
+    if (window.matchMedia?.('(display-mode: fullscreen)').matches) {recordCallFullscreen('installed-fullscreen'); return;}
     if (document.fullscreenElement) {recordCallFullscreen('entered-fullscreen'); return;}
     if (!document.documentElement.requestFullscreen) {recordCallFullscreen('API-unavailable'); return;}
     recordCallFullscreen('requesting');

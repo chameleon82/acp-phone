@@ -78,6 +78,8 @@ The example launcher also serves HTTPS on `0.0.0.0:3443` when `.acp-phone/tls/ce
 
 For local development with mkcert, generate a certificate containing the computer's LAN IP, then open `https://<LAN-IP>:3443` on the phone. The phone must trust the issuing CA certificate; copy only the public `rootCA.pem` from `mkcert -CAROOT`, never its private key. Regenerate the server certificate if the LAN IP changes.
 
+To install ACP Phone on Android, open its trusted HTTPS address in Chrome and choose **Install app** (or **Add to home screen**) from the browser menu. Launch ACP Phone from its new icon to open the contact list in fullscreen. Browser installations of a mounted phone app start at its `/call` page. The server must remain running and reachable for calls; if the connection fails, the app shows a reconnect screen. Only that reconnect screen is cached, not calls, audio, transcripts or application assets. App updates take effect after closing and reopening the app.
+
 Run checks and unit tests:
 
 ```sh

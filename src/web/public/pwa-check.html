@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b141a">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>ACP Phone — проверка установки</title>
+<style>
+body {font:18px system-ui; max-width:680px; margin:24px auto; padding:16px; background:#0b141a; color:#f5f7fa}
+pre {white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px}
+</style>
+<h1>Проверка установки</h1>
+<p id="install-status">Ожидается проверка установки браузером. Отсутствие приглашения само по себе не означает ошибку.</p>
+<pre id="report" aria-live="polite"></pre>
+<p>Этот отчёт проверяет страницу и service worker. Создание Android-приложения через Google Play Services происходит отдельно; его результат страница не получает.</p>
+<script type="module" src="./pwa-check.js"></script>
+</html>

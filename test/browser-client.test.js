@@ -21,7 +21,7 @@ test('LAN HTTP without randomUUID creates distinct UUID channels from secure ran
     assert.notEqual(new URL(page.nodes[3].src).searchParams.get('channel'), channel);
 });
 
-function host(baseUrl = 'https://phone.example', skin = 'default', {mobile = false, requestFullscreen, crypto = {randomUUID: () => 'channel'}} = {}) {
+function host(baseUrl = 'https://phone.example', skin = 'default', {mobile = false, installed = false, requestFullscreen, crypto = {randomUUID: () => 'channel'}} = {}) {
     const listeners = new Map();
     const nodes = [];
     const timers = new Map();
@@ -33,7 +33,7 @@ function host(baseUrl = 'https://phone.example', skin = 'default', {mobile = fal
         setTimeout: callback => {timers.set(1, callback); return 1;},
         clearTimeout: id => timers.delete(id),
         window: {
-            matchMedia: () => ({matches: mobile}),
+            matchMedia: query => ({matches: query === '(display-mode: fullscreen)' ? installed : mobile}),
             location: {origin: 'https://host.example', href: 'https://host.example/project'},
             addEventListener: (name, callback) => listeners.set(name, callback),
             removeEventListener: name => listeners.delete(name),
@@ -206,4 +206,13 @@ test('desktop fullscreen is opt-in and a late grant is released after hangup', a
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(exits, 1);
     assert.equal(page.document.body.style.overflow, 'auto');
+});
+
+test('installed fullscreen calls do not request or exit browser fullscreen', () => {
+    let requests = 0;
+    const page = host(undefined, undefined, {mobile: true, installed: true, requestFullscreen() {requests++;}});
+    page.phone.openCall('a');
+    page.audioReady();
+    assert.equal(requests, 0);
+    assert.equal(JSON.parse(page.diagnostics.get('acp-phone.fullscreen-diagnostic')).at(-1).result, 'installed-fullscreen');
 });
