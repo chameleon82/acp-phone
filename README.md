@@ -87,6 +87,41 @@ npm run check
 npm test
 ```
 
+## Release and npm publication
+
+The package version is tracked in both `package.json` and `package-lock.json`. npm publishing is deliberately triggered **only** by pushing a Git tag named exactly `v<package-version>`; creating a GitHub Release or pushing a branch does not publish anything.
+
+The workflow checks out the immutable tag, verifies that its name matches `package.json`, runs checks/tests, inspects the npm tarball, and only then publishes to the public npm registry. The publish job uses the GitHub Actions environment named `npm-publish`, so configure that environment before the first release. Add a repository or environment secret named `NPM_TOKEN` with an npm automation/publish token that can publish `acp-phone`.
+
+The release candidate prepared in this repository is **`0.2.0`**. After reviewing and committing the release-preparation changes, create and push its tag:
+
+```sh
+git switch main
+git pull --ff-only origin main
+npm ci
+npm run release:check
+git status --short
+
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin main
+git push origin v0.2.0
+```
+
+Pushing `v0.2.0` starts the publish workflow. Monitor it in **GitHub → Actions → Publish npm package**. After it succeeds, create a GitHub Release from the existing `v0.2.0` tag if you want release notes; that GitHub Release is informational and cannot publish a second copy.
+
+For a future release, change the version using npm so the manifest and lockfile remain synchronized, commit that change, validate it, then tag the matching commit:
+
+```sh
+npm version patch --no-git-tag-version
+npm run release:check
+git add package.json package-lock.json
+git commit -m "Release vX.Y.Z"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin main vX.Y.Z
+```
+
+`npm` never allows publishing the same version twice. Do not move or recreate an already-pushed release tag; publish a new semantic version instead.
+
 ## Configuration
 
 `.env` is optional. Set gateway credentials and selected OpenAI models in the process environment, `.env`, or a top-level `environment` object in `acp-phone.config.json`. Process environment takes priority over `.env`, which takes priority over configuration defaults. Agents inherit these values; a target's own `environment` can override them for that agent. Values are literal strings; `${VARIABLE}` substitution is not supported.
