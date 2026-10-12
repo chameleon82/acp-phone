@@ -36,7 +36,7 @@ export function createCallSessionFactory({factory, idleMs = 15 * 60_000, storePa
         clearTimeout(entry.timer);
         entry.controller.abort();
         const session = await entry.session.catch(() => undefined);
-        await session?.close?.();
+        if (!session?.shared) await session?.close?.();
     }
     function touch(entry, target, call) {
         clearTimeout(entry.timer);
@@ -106,6 +106,7 @@ export function createCallSessionFactory({factory, idleMs = 15 * 60_000, storePa
                 const [targetId, callId] = JSON.parse(id);
                 return end({target: {id: targetId}, call: {id: callId}});
             }));
+            await factory.close?.();
         },
     };
 }

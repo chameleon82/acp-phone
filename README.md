@@ -312,3 +312,55 @@ Only the final voice turn goes to the ACP agent.
 All speech requests use the same `OPENAI_API_KEY` and required `OPENAI_BASE_URL`.
 The server does not fall back to the official OpenAI endpoint. If previews fail,
 the call continues and text appears after the pause.
+
+## Generic remote HTTP/SSE ACP targets
+
+ACP Phone supports two server-configured transports. Existing targets with `command` and no `transport` remain **stdio** targets; no migration is required.
+
+```json
+{
+  "id": "local-agent",
+  "label": "Local Agent",
+  "command": "some-acp-agent",
+  "args": [],
+  "cwd": "."
+}
+```
+
+A generic remote target uses JSON-RPC-over-HTTP for client requests and SSE for ACP events. Endpoints, static creation body, and headers are configuration owned by the server operator; browsers can select only the configured `id`.
+
+```json
+{
+  "id": "remote-agent",
+  "label": "Remote Agent",
+  "transport": "http",
+  "baseUrl": "https://acp.example.invalid",
+  "headers": {"X-Client-Name": "acp-phone"},
+  "headerEnv": {"Authorization": "ACP_PHONE_REMOTE_AUTHORIZATION"},
+  "session": {
+    "mode": "create-per-call",
+    "createPath": "/acp/v1/sessions",
+    "messagePathTemplate": "/acp/v1/sessions/{sessionId}/messages",
+    "eventsPathTemplate": "/acp/v1/sessions/{sessionId}/sse",
+    "historyPathTemplate": "/acp/v1/sessions/{sessionId}/events",
+    "createBody": {"agent": "configured-agent", "cwd": "."}
+  }
+}
+```
+
+`baseUrl` must be HTTP(S) and must not embed credentials. Session URL templates must contain `{sessionId}`; ACP Phone URL-encodes each ID before substitution. `create-per-call` (the default) creates one remote session for a call, `reuse-target-session` retains one server-process-lifetime session for a target, and `attach-existing` requires `session.sessionId`. Optional `session.idPath` selects a dot-path in the creation response; otherwise top-level `sessionId` and `id` are accepted.
+
+The remote server contract is: `POST createPath` returns a JSON session ID, `POST messagePathTemplate` accepts JSON-RPC 2.0 requests, and `GET eventsPathTemplate` returns `text/event-stream` ACP JSON notifications. ACP Phone sends `Last-Event-ID` while reconnecting, deduplicates replayed IDs, uses bounded reconnect backoff, and stops when the call ends. It buffers agent text into coherent speech chunks; tool/protocol events are not spoken. Optional cleanup/history endpoints are configuration-driven only—no undocumented remote operation is invented.
+
+Put secret values in the process environment and reference their *variable names* through `headerEnv`; never commit secrets to the JSON configuration. Resolved header values are never returned from `/api/health`, target APIs, errors, or normal logs.
+
+## Listener and configuration options
+
+```text
+acp-phone start --host 127.0.0.1 --port 3000 --config ./acp-phone.config.json \
+  --public-base-url https://phone.example.invalid
+```
+
+Equivalent variables are `ACP_PHONE_HOST`, `ACP_PHONE_PORT`, `ACP_PHONE_CONFIG`, and `ACP_PHONE_PUBLIC_BASE_URL`. Precedence is **CLI flags > environment variables > `listener` values in the config > defaults**. Defaults are `127.0.0.1`, `3000`, `./acp-phone.config.json`, and no public URL. Ports must be integers from 1 through 65535. `publicBaseUrl` is validated as HTTP(S) but never changes the listener bind address.
+
+`GET /api/health` safely reports the running version, effective listener host/port, and configured target IDs/transports. It validates configuration but does not create remote sessions. The application uses same-origin UI/API routes and never accepts browser-provided ACP URLs, commands, session IDs, headers, working directories, or JSON-RPC methods.

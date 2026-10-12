@@ -2,6 +2,7 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 import {TargetNotFoundError, VoiceCallError} from '../../domain/errors.js';
+import {createAcpHttpSession} from './http-session.js';
 import {createAcpStdioSession} from './stdio-session.js';
 
 /**
@@ -11,13 +12,30 @@ import {createAcpStdioSession} from './stdio-session.js';
  * The function must resolve to an object with `prompt({ text, call, signal })` and
  * may provide `close()`. This keeps ACP SDK details and credentials outside core.
  */
-export function createConfiguredAcpSessionFactory({targets, baseDirectory = process.cwd()}) {
+export function createConfiguredAcpSessionFactory({targets, baseDirectory = process.cwd(), environment = process.env}) {
     const targetsById = new Map((targets ?? []).map((target) => [target.id, target]));
+    const sharedHttpSessions = new Map();
+
+    async function openHttp(configuredTarget, options) {
+        if (configuredTarget.session.mode !== 'reuse-target-session') {
+            return createAcpHttpSession({target: configuredTarget, environment, ...options});
+        }
+        let session = sharedHttpSessions.get(configuredTarget.id);
+        if (!session) {
+            session = Promise.resolve().then(() => createAcpHttpSession({target: configuredTarget, environment, ...options}));
+            sharedHttpSessions.set(configuredTarget.id, session);
+            session.catch(() => { if (sharedHttpSessions.get(configuredTarget.id) === session) sharedHttpSessions.delete(configuredTarget.id); });
+        }
+        return {...await session, shared: true};
+    }
 
     return {
         async open({target, call, signal, sessionId}) {
             const configuredTarget = targetsById.get(target.id);
             if (!configuredTarget) throw new TargetNotFoundError(target.id);
+            if ((configuredTarget.transport ?? 'stdio') === 'http') {
+                return openHttp(configuredTarget, {call, signal, sessionId});
+            }
             const resolvedTarget = {...configuredTarget, cwd: resolve(baseDirectory, configuredTarget.cwd ?? '.')};
             if (configuredTarget.adapterModule === undefined || configuredTarget.adapterModule === 'stdio') {
                 return createAcpStdioSession({target: resolvedTarget, signal, sessionId});
@@ -61,6 +79,10 @@ export function createConfiguredAcpSessionFactory({targets, baseDirectory = proc
                 });
             }
             return session;
+        },
+        async close() {
+            await Promise.all([...sharedHttpSessions.values()].map(async session => (await session).close()));
+            sharedHttpSessions.clear();
         },
     };
 }

@@ -5,23 +5,29 @@ import dotenv from 'dotenv';
 import express from 'express';
 import {createServer as createHttpsServer} from 'node:https';
 import {createAcpPhoneApp} from '../../src/web/server.js';
+import {loadAcpPhoneConfig, resolveConfigPath, resolveListenerSettings} from '../../src/config.js';
 
-dotenv.config();
 const directory = dirname(fileURLToPath(import.meta.url));
-const configPath = resolve(process.cwd(), process.env.ACP_PHONE_CONFIG ?? 'acp-phone.config.json');
-const config = await loadConfig(configPath);
+const argumentsAfterCommand = process.argv.slice(2).filter(argument => argument !== 'start');
+const preliminaryConfigPath = resolveConfigPath({argv: argumentsAfterCommand});
+dotenv.config({path: resolve(dirname(preliminaryConfigPath), '.env')});
+const configPath = resolveConfigPath({argv: argumentsAfterCommand});
+const config = await loadAcpPhoneConfig(configPath);
+const listener = resolveListenerSettings({argv: argumentsAfterCommand, config: config.listener});
+const packageMetadata = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
 const phone = createAcpPhoneApp({
     contacts: config.targets,
     environment: config.environment,
     baseDirectory: dirname(configPath),
     sessionStorePath: config.sessionStorePath,
     limits: config.limits,
+    listener,
+    version: packageMetadata.version,
     onProgress: logVoiceProgress,
 });
 const app = express();
 app.use(express.static(resolve(directory, 'public'), {extensions: ['html']}));
 app.use(phone.app);
-const port = Number(process.env.ACP_PHONE_PORT ?? config.environment?.ACP_PHONE_PORT ?? 3000);
 const setting = name => process.env[name] ?? config.environment?.[name];
 const certPath = setting('ACP_PHONE_TLS_CERT');
 const keyPath = setting('ACP_PHONE_TLS_KEY');
@@ -36,9 +42,10 @@ try {
     if (certPath || keyPath || error.code !== 'ENOENT') throw error;
 }
 const servers = [];
-const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`ACP Phone listening at http://localhost:${server.address().port}`);
-    console.log('[ACP Phone] configured ACP targets', config.targets.map(({id, label, command, cwd}) => ({id, label, command, cwd})));
+const server = app.listen(listener.port, listener.host, () => {
+    const address = server.address();
+    console.log(`ACP Phone listening at http://${listener.host}:${address.port}`);
+    console.log('[ACP Phone] configured ACP targets', config.targets.map(({id, label, transport}) => ({id, label, transport})));
     console.log('[ACP Phone] voice turns use automatic end-of-speech detection, then STT → streaming ACP → sentence TTS.');
 });
 servers.push(server);
@@ -46,8 +53,8 @@ if (tls) {
     const httpsPort = Number(setting('ACP_PHONE_HTTPS_PORT') ?? 3443);
     const httpsServer = createHttpsServer(tls, app);
     servers.push(httpsServer);
-    httpsServer.listen(httpsPort, '0.0.0.0', () => {
-        console.log(`ACP Phone listening at https://localhost:${httpsServer.address().port}`);
+    httpsServer.listen(httpsPort, listener.host, () => {
+        console.log(`ACP Phone listening at https://${listener.host}:${httpsServer.address().port}`);
     });
 }
 
@@ -57,35 +64,16 @@ async function shutdown() {
     shuttingDown = true;
     const deadline = setTimeout(() => process.exit(1), 5000);
     deadline.unref();
-    for (const listener of servers) {
-        listener.close();
-        listener.closeAllConnections();
+    for (const socketServer of servers) {
+        socketServer.close();
+        socketServer.closeAllConnections();
     }
-    try {
-        await phone.close();
-        process.exit(0);
-    } catch (error) {
-        console.error('[ACP Phone] shutdown.failed', {message: error.message});
-        process.exit(1);
-    }
+    try { await phone.close(); process.exit(0); }
+    catch (error) { console.error('[ACP Phone] shutdown.failed', {message: error.message}); process.exit(1); }
 }
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
 
 function logVoiceProgress(event) {
-    console.log(`[ACP Phone] ${event.stage}`, Object.fromEntries(
-        Object.entries(event).filter(([key]) => key !== 'stage'),
-    ));
-}
-
-async function loadConfig(path) {
-    try {
-        const config = JSON.parse(await readFile(path, 'utf8'));
-        if (!Array.isArray(config.targets) || config.targets.length === 0) {
-            throw new Error('targets must be a non-empty array');
-        }
-        return config;
-    } catch (cause) {
-        throw new Error(`Could not load ACP Phone configuration from ${path}: ${cause.message}`, {cause});
-    }
+    console.log(`[ACP Phone] ${event.stage}`, Object.fromEntries(Object.entries(event).filter(([key]) => key !== 'stage')));
 }

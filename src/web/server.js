@@ -14,7 +14,7 @@ const directory = dirname(fileURLToPath(import.meta.url));
 /** Mountable HTTP app. Importing this module never starts a server or reads .env/config files. */
 export function createAcpPhoneApp({contacts, speech, environment = {}, baseDirectory = process.cwd(),
     sessionStorePath = '.acp-phone/sessions.json', limits = {}, acpSessionFactory,
-    onProgress = () => {}, logger = console} = {}) {
+    listener, version = '0.2.0', onProgress = () => {}, logger = console} = {}) {
     if (!Array.isArray(contacts) || !contacts.length
         || contacts.some(contact => !contact || typeof contact.id !== 'string' || !contact.id.trim()
             || typeof contact.label !== 'string' || !contact.label.trim())
@@ -38,17 +38,26 @@ export function createAcpPhoneApp({contacts, speech, environment = {}, baseDirec
         ttsModel: env.OPENAI_TTS_MODEL, voice: env.OPENAI_TTS_VOICE,
         ...speech,
     });
+    const configuredFactory = acpSessionFactory ?? createConfiguredAcpSessionFactory({
+        targets: contacts.map(contact => ({...contact, environment: {...env, ...contact.environment}})),
+        baseDirectory,
+        environment: env,
+    });
     const callSessions = createCallSessionFactory({
         storePath: sessionStorePath ? resolve(baseDirectory, sessionStorePath) : undefined,
-        factory: acpSessionFactory ?? createConfiguredAcpSessionFactory({
-            targets: contacts.map(contact => ({...contact, environment: {...env, ...contact.environment}})),
-            baseDirectory,
-        }),
+        factory: configuredFactory,
     });
     const voiceCallService = new VoiceCallService({...speechAdapters, acpSessionFactory: callSessions, onProgress});
     const maxAudioBytes = limits.maxAudioBytes ?? 10 * 1024 * 1024;
     const allowedAudioTypes = new Set(['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav']);
     const app = express();
+    app.use((request, response, next) => {
+        if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.get('origin')) return next();
+        try {
+            if (new URL(request.get('origin')).host === request.get('host')) return next();
+        } catch { /* rejected below */ }
+        response.status(403).json({error: {code: 'ORIGIN_FORBIDDEN', message: 'Cross-origin state-changing requests are not allowed.'}});
+    });
     app.post('/api/greeting-audio', express.json({limit: '1kb'}), async (request, response, next) => {
         const controller = new AbortController();
         response.once('close', () => {if (!response.writableEnded) controller.abort();});
@@ -104,10 +113,16 @@ export function createAcpPhoneApp({contacts, speech, environment = {}, baseDirec
     app.get('/call', (_request, response) => response.sendFile(resolve(directory, 'public/index.html')));
     app.use(express.static(resolve(directory, 'public'), {index: false}));
     app.get('/api/health', (_request, response) => {
-        response.set('Cache-Control', 'no-store').json({instanceId: serverInstanceId});
+        response.set('Cache-Control', 'no-store').json({
+            ok: true,
+            version,
+            instanceId: serverInstanceId,
+            ...(listener ? {listener: {host: listener.host, port: listener.port}} : {}),
+            targets: contacts.map(({id, transport}) => ({id, transport: transport ?? 'stdio', ready: true})),
+        });
     });
     app.get('/api/targets', (_request, response) => {
-        response.json({targets: contacts.map(({id, label}) => ({id, label}))});
+        response.json({targets: contacts.map(({id, label, transport}) => ({id, label, transport: transport ?? 'stdio'}))});
     });
     app.get('/api/contacts', (_request, response) => {
         response.set('Cache-Control', 'no-store').json({contacts: contacts.map(({id, label}) => ({id, label}))});

@@ -3,15 +3,15 @@ import {readFile, copyFile} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {resolve} from 'node:path';
 
-const command = process.argv[2] ?? 'start';
+const [command = 'start', ...options] = process.argv.slice(2);
 try {
-    if (process.argv.length > 3) throw new Error('Unexpected arguments. Run acp-phone --help.');
     if (['--help', '-h', 'help'].includes(command)) {
-        console.log('ACP Phone\n\n  acp-phone init       Create configuration in the current directory\n  acp-phone [start]    Start the voice app\n  acp-phone --version  Print the version\n\nSet OPENAI_API_KEY and OPENAI_BASE_URL in your environment, optional .env, or configuration environment, then open http://localhost:3000.');
+        console.log('ACP Phone\n\n  acp-phone init       Create configuration in the current directory\n  acp-phone [start] [options]  Start the voice app\n  acp-phone --version  Print the version\n\nListener options:\n  --host <host>\n  --port <port>\n  --config <path>\n  --public-base-url <url>\n\nCLI options override ACP_PHONE_HOST, ACP_PHONE_PORT, ACP_PHONE_CONFIG, and ACP_PHONE_PUBLIC_BASE_URL.');
     } else if (['--version', '-v'].includes(command)) {
         const {version} = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
         console.log(version);
     } else if (command === 'init') {
+        if (options.length) throw new Error('acp-phone init does not accept options.');
         for (const [source, name, mode] of [['.env.example', '.env', 0o600], ['acp-phone.config.example.json', 'acp-phone.config.json', 0o644]]) {
             const destination = resolve(process.cwd(), name);
             try {
@@ -24,7 +24,7 @@ try {
                 console.log(`Kept existing ${name}`);
             }
         }
-        console.log('Set your gateway URL and key in your environment, optional .env, or configuration environment, configure your ACP agents, then run npx acp-phone.');
+        console.log('Set gateway credentials in server-side environment or .env, configure ACP targets, then run acp-phone.');
     } else if (command === 'start') {
         await import('../examples/web/server.js');
     } else {

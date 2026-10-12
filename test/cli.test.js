@@ -15,12 +15,14 @@ test('CLI serves trusted HTTPS alongside HTTP and shuts down both listeners', as
     const cwd = await mkdtemp(join(tmpdir(), 'acp-phone-https-'));
     let child;
     try {
+        const httpPort = await availablePort();
+        const httpsPort = await availablePort();
         await run('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
             '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
             '-keyout', 'key.pem', '-out', 'cert.pem'], {cwd});
         await writeFile(join(cwd, 'acp-phone.config.json'), JSON.stringify({targets: [{id: 'test', label: 'Test', command: 'unused'}]}));
         child = spawn(process.execPath, [cli], {cwd, env: {...process.env,
-            ACP_PHONE_CONFIG: 'acp-phone.config.json', ACP_PHONE_PORT: '0', ACP_PHONE_HTTPS_PORT: '0',
+            ACP_PHONE_CONFIG: 'acp-phone.config.json', ACP_PHONE_PORT: String(httpPort), ACP_PHONE_HTTPS_PORT: String(httpsPort),
             ACP_PHONE_TLS_CERT: 'cert.pem', ACP_PHONE_TLS_KEY: 'key.pem',
             OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1'}, stdio: ['ignore', 'pipe', 'pipe']});
         const exited = new Promise(resolve => child.once('exit', resolve));
@@ -31,8 +33,8 @@ test('CLI serves trusted HTTPS alongside HTTP and shuts down both listeners', as
             child.stderr.on('data', chunk => {errors += chunk;});
             child.stdout.on('data', chunk => {
                 output += chunk;
-                const http = output.match(/listening at (http:\/\/localhost:\d+)/);
-                const https = output.match(/listening at (https:\/\/localhost:\d+)/);
+                const http = output.match(/listening at (http:\/\/(?:localhost|127\.0\.0\.1):\d+)/);
+                const https = output.match(/listening at (https:\/\/(?:localhost|127\.0\.0\.1):\d+)/);
                 if (http && https) {clearTimeout(timer); resolve([http[1], https[1]]);}
             });
             child.once('exit', () => {clearTimeout(timer); reject(new Error(errors));});
@@ -41,7 +43,7 @@ test('CLI serves trusted HTTPS alongside HTTP and shuts down both listeners', as
         assert.equal((await fetch(`${urls[0]}/api/contacts`)).status, 200);
         const ca = await readFile(join(cwd, 'cert.pem'));
         const contacts = await new Promise((resolve, reject) => {
-            httpsGet(`${urls[1]}/api/contacts`, {ca, family: 4}, response => {
+            httpsGet(urls[1].replace('127.0.0.1', 'localhost') + '/api/contacts', {ca, family: 4}, response => {
                 assert.equal(response.statusCode, 200);
                 let body = '';
                 response.on('data', chunk => {body += chunk;});
@@ -83,11 +85,12 @@ test('CLI starts without .env using config defaults and respects process credent
     }
     try {
         for (const useProcessCredentials of [false, true]) {
+            const port = await availablePort();
             await writeFile(join(cwd, 'acp-phone.config.json'), JSON.stringify({
+                listener: {port},
                 environment: {
                     OPENAI_API_KEY: useProcessCredentials ? '' : 'test-key',
-                    OPENAI_BASE_URL: useProcessCredentials ? '' : 'http://127.0.0.1:9/v1',
-                    ACP_PHONE_PORT: '0',
+                    OPENAI_BASE_URL: useProcessCredentials ? '' : 'http://127.0.0.1:9/v1'
                 },
                 targets: [{id: 'test', label: 'Test', command: 'unused'}],
             }));
@@ -104,7 +107,7 @@ test('CLI starts without .env using config defaults and respects process credent
                     child.stderr.on('data', chunk => {errors += chunk;});
                     child.stdout.on('data', chunk => {
                         output += chunk;
-                        const match = output.match(/listening at (http:\/\/localhost:\d+)/);
+                        const match = output.match(/listening at (http:\/\/(?:localhost|127\.0\.0\.1):\d+)/);
                         if (match) {clearTimeout(timer); resolve(match[1]);}
                     });
                     child.once('error', error => {clearTimeout(timer); reject(error);});
@@ -128,3 +131,12 @@ test('CLI starts without .env using config defaults and respects process credent
         }
     } finally {await rm(cwd, {recursive: true, force: true});}
 });
+
+async function availablePort() {
+    const {createServer} = await import('node:net');
+    const server = createServer();
+    await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject));
+    const {port} = server.address();
+    await new Promise(resolve => server.close(resolve));
+    return port;
+}

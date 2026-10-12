@@ -224,10 +224,11 @@ Safe initial defaults:
 
 ### Milestone 3 — Product hardening
 
+- [x] Generic, server-configured ACP-over-HTTP JSON-RPC and SSE transport with bounded reconnects and no browser-provided endpoint/header authority.
+- [x] Explicit loopback listener defaults, CLI/environment/config precedence, validated listener settings, and safe health output.
 - [ ] Authentication, target-level authorization, encrypted secrets, audit-safe telemetry, and rate limits.
-- [ ] Docker deployment, health/readiness endpoints, structured logging, and metrics.
+- [ ] Docker deployment, structured logging, and metrics.
 - [ ] OpenAPI contract and a framework adapter (Express/Fastify/Hono selected after integration requirements are known).
-- [ ] Remote ACP adapter with authenticated, allow-listed endpoints.
 
 ### Milestone 4 — Real call transports
 
@@ -246,3 +247,4 @@ Safe initial defaults:
 
 - **2025-02-02:** Initial design. Chose separate OpenAI STT, text presentation, and TTS APIs over Realtime API for the first iteration; Node.js ESM core; ACP adapter boundary; local browser call-screen example.
 - **2026-10-08:** Added browser VAD, NDJSON streaming transport, ACP v1 `agent_message_chunk` forwarding, sentence-level TTS/playback queue, and speech barge-in cancellation. Documented the retained completed-utterance STT and per-sentence REST TTS boundaries.
+- **2026-10-12:** Added generic remote HTTP JSON-RPC/SSE ACP targets, safe server-side configured headers, validated session modes, robust SSE parsing/reconnect behavior, and loopback-by-default listener configuration.
